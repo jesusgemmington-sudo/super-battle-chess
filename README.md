@@ -21,32 +21,41 @@ for both sides alike — no randomness, no hidden information — and energy buy
 Checkmate detection is power-up aware: it isn't mate if a 6⚡ knight-jump can
 still save the king. In 2v2 Grandmaster, teammates alternate the team's moves.
 
-**🪂 Royale** — a 2–4 player free-for-all arena where **you are the King**.
-A supply box bursts over a giant lawn-chessboard and scatters golden pieces;
-loot them as weapons that **fire along their chess movement**:
+**🪂 Royale — "The Board"** — a 2–4 player **first-person battle royale** on a
+480m × 480m chessboard world rendered in 3D: elevated plateaus (*Pawn Rise*,
+*Queen's Bluff*) reached by stairways, the white-stone town of **Whiteford**,
+the slate high-rises of **Blackmoor**, a central Cathedral spire, and giant
+chess-piece monuments for cover. You drop in as the King; supply crates
+scatter golden pieces, and **every piece is a weapon**:
 
 | Piece | What it does |
 |---|---|
-| ♙ Pawn | Quick short-range dagger throw |
-| ♗ Bishop | Sniper — shots snap to **diagonals only** |
-| ♖ Rook | Cannon — huge hits along **ranks & files only** |
-| ♘ Knight | A horse you **ride**: big speed boost + L-shaped trample dash (two squares, then one sideways) with its own HP |
-| ♕ Queen | Rare legendary — rapid bolts in all 8 directions |
+| ♙ Pawn Pistol | Quick free-aim shots — and it can **promote** (see below) |
+| ♗ Bishop Longshot | Hitscan sniper — big bonus damage on **true diagonals** |
+| ♖ Rook Cannon | Splash shells — bonus damage along **ranks & files** |
+| ♕ Queen Scepter | Rare: rapid fire, empowered on **all 8 lines** |
+| ♘ Knight | Grants **Knight's Leap (Q)** — an L-shaped blink *over* walls and onto rooftops, 3 charges |
+| ♖ Banner | **Castling (F)** — plant it, then swap positions with it from anywhere. Everyone can see (and camp) your banner |
 | 👑 Crown | Heals 50 HP |
 
-What makes it chess to the bone:
+The chess soul of the mode:
 
-- **The board is the zone.** Outer rings of tiles crack and fall away
-  (8×8 → 6×6 → 4×4 → 2×2). Off the board, your king bleeds out fast.
-- **CHECK!** Since every weapon fires along chess lines, the game warns you
-  the instant you're standing in an armed enemy's firing line — break the
-  diagonal or die on it. Every kill is a **CHECKMATE**.
-- **The Promotion Run.** A glowing promotion rank relocates around the board's
-  edge; channel on it while carrying a pawn and it promotes into the Queen —
-  announced to everyone, so expect company.
+- **True Lines.** Shots aligned with the board's ranks, files, and diagonals
+  hit harder — your crosshair turns gold when you're on one. Aiming becomes
+  positioning, and streets are laid out on the grid to fight over.
+- **CHECK!** flashes when an armed enemy has line-of-sight and is drawing a
+  bead on you. Break the line like a king stepping off a diagonal.
+- **En passant (Shift):** a dodge-step with a brief immunity window — shots
+  you slip are announced to the lobby.
+- **The board is the zone.** Outer rings of squares sink into the void
+  (8×8 → 6×6 → 4×4 → 2×2).
+- **Promotion:** channel on the glowing promotion square holding a pawn and
+  it becomes the Queen — broadcast to everyone, so bring friends.
+- Every kill is a **CHECKMATE**; last crown standing wins. Eliminated players
+  spectate in free-fly.
 
-WASD/arrows to move, mouse to aim, click to attack, E to pick up or swap.
-Last crown standing wins. Bots can fill the lobby here too.
+WASD + mouse (click to lock), Space jump, E loot, Q leap, F castle,
+Shift dodge. Keyboard required. Bots can fill the lobby here too.
 
 ## 🤖 Playing the computer
 

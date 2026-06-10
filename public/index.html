@@ -155,7 +155,7 @@
       <div class="emote-tray" id="emote-tray"></div>
     </section>
 
-    <!-- ============ ROYALE ============ -->
+    <!-- ============ ROYALE (first-person) ============ -->
     <section id="screen-royale" class="screen hidden">
       <div class="br-hud-top">
         <div id="br-alive" class="br-pill">👑 0 alive</div>
@@ -163,14 +163,25 @@
         <div id="br-check" class="br-check hidden">⚠️ CHECK!</div>
       </div>
       <div id="br-wrap">
-        <canvas id="br-canvas" width="800" height="800"></canvas>
+        <canvas id="br-canvas"></canvas>
+        <div id="br-hurt"></div>
+        <div id="br-cross">+</div>
+        <div id="br-align"></div>
+        <div id="br-hitmark"></div>
+        <canvas id="br-map" width="120" height="120"></canvas>
         <div id="br-feed"></div>
         <div id="br-banner" class="hidden"></div>
+        <div id="br-lock">🪂 CLICK TO TAKE THE FIELD 🪂</div>
       </div>
       <div class="br-hud-bottom">
         <div class="br-hpwrap"><div class="br-hpbar"><div id="br-hp"></div></div></div>
         <div id="br-weapon" class="br-pill">✊ Royal Fists</div>
-        <div class="br-help">WASD/arrows move · mouse aim · click attack · E pick up / swap</div>
+        <div class="br-abilities">
+          <span id="ab-leap" class="br-ab">Q ♘×0</span>
+          <span id="ab-castle" class="br-ab">F ♖ —</span>
+          <span id="ab-dodge" class="br-ab">⇧ 💨 ready</span>
+        </div>
+        <div class="br-help">WASD + mouse · click shoot · Space jump · E loot · Q knight's leap · F castle · Shift en passant</div>
       </div>
     </section>
   </main>

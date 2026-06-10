@@ -278,7 +278,7 @@ function renderLobby() {
     lobby.rules === 'grandmaster'
       ? '👑 Real chess rules: turns, check & checkmate — plus earnable power-ups (no luck involved)'
       : lobby.rules === 'royale'
-        ? '🪂 Free-for-all! Drop in as a King, loot chess pieces as weapons, survive the shrinking board.'
+        ? '🪂 First-person free-for-all on a giant 3D chessboard! Loot pieces as weapons, leap like a knight, castle across the map. Keyboard + mouse needed.'
         : '⚡ No turns! Move any piece whenever it’s off cooldown. Capture the king to win.';
 
   // Start button + hint
@@ -401,8 +401,8 @@ function startGame(msg) {
     inGame = true;
     game = { rules: 'royale', players: msg.players, playing: true, myTeam: 0 };
     els.overlayEnd.classList.add('hidden');
+    showScreen('royale'); // must be visible before the renderer sizes itself
     br.init(msg, { send, myId });
-    showScreen('royale');
     return;
   }
   buildBoard();

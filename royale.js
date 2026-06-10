@@ -1,161 +1,118 @@
-// Royale mode - server-side simulation for Super Battle Chess.
+// Royale mode - server simulation for "The Board", the chess FPS battle
+// royale. Movement is client-driven (friends-scale trust) with bounds
+// checks; combat, items, zone, abilities and win logic are authoritative.
 //
-// Every player is a King on a giant 8x8 board. Chess pieces fall from supply
-// boxes and act as weapons that fire along their chess movement lines:
-// bishops snipe diagonals, rooks cannon ranks/files, queens get all eight,
-// pawns are short daggers, and knights are rideable mounts with an L-shaped
-// trample dash. The board itself is the shrinking zone (outer rings fall
-// away), standing in an enemy's firing line shows CHECK!, and carrying a pawn
-// onto the glowing promotion rank upgrades it into a queen. Last crown
-// standing wins; kills are CHECKMATEs.
+// Chess identity:
+//  - True Lines: shots aligned with board ranks/files ('line') or diagonals
+//    ('diag') get weapon-specific damage bonuses.
+//  - Knight's Leap: L-shaped blink (over walls), 3 charges per knight.
+//  - Castling: plant a rook banner, later swap positions with it.
+//  - En passant dodge: short immunity window; dodged shots are announced.
+//  - The board is the zone: outer tile rings sink into the void.
+//  - Promotion: hold a pawn on the glowing promotion square to gain a queen.
+//  - Kills are CHECKMATEs. Last crown standing wins.
 
-export const TILE = 100;
-export const BOARD = 8;
-export const WORLD = TILE * BOARD;
+import {
+  TILE, BOARD, WORLD, buildWorld, groundAt, tileRing, raycast, lineAlignment,
+  pointInBox,
+} from './public/map.js';
 
-const TICK_MS = 33;
-const SNAP_EVERY = 2; // snapshot every 2 ticks (~15Hz)
-const PLAYER_R = 18;
-const SPEED = 175;
-const MOUNT_SPEED = 285;
+const TICK_MS = 50;            // 20Hz sim
+const SNAP_EVERY = 2;          // ~10Hz snapshots
+const PLAYER_R = 0.7;          // body radius
+const PLAYER_H = 1.8;
+const EYE = 1.6;
 const HP_MAX = 100;
-const HORSE_HP = 70;
-const REGEN_AFTER_MS = 4000;
-const REGEN_PER_S = 3;
-const OFFBOARD_DPS = 14;
-const PICKUP_R = 46;
+const REGEN_AFTER_MS = 5000;
+const REGEN_PER_S = 4;
+const OFFBOARD_DPS = 20;
+const PICKUP_R = 3.2;
+const DODGE_IMMUNE_MS = 350;
+const DODGE_CD_MS = 4000;
+const LEAP_CHARGES = 3;
+const LEAP_RANGE = 26;         // ~2 squares + 1 sideways at world scale
+const CASTLE_CD_MS = 3000;
+const PROMO_CHANNEL_MS = 2000;
 
-const FAST = !!process.env.SBC_ROYALE_FAST; // shortened timers for tests
-const T = (ms) => (FAST ? Math.max(1500, ms / 8) : ms);
+const FAST = !!process.env.SBC_ROYALE_FAST;
+const T = (ms) => (FAST ? Math.max(15000, ms / 8) : ms);
 
 export const WEAPONS = {
-  melee:  { dmg: 24, cd: 600, range: 60 },
-  pawn:   { dmg: 18, cd: 450, range: 270, speed: 500, snap: null,    projR: 10 },
-  bishop: { dmg: 42, cd: 1100, range: 720, speed: 780, snap: 'diag',  projR: 9 },
-  rook:   { dmg: 55, cd: 1400, range: 620, speed: 430, snap: 'ortho', projR: 15 },
-  queen:  { dmg: 40, cd: 500, range: 660, speed: 660, snap: 'eight', projR: 10 },
+  fists:  { dmg: 20, cd: 500, kind: 'melee', range: 3.2 },
+  pawn:   { dmg: 15, cd: 320, kind: 'proj', speed: 75, range: 90, projR: 0.4, bonus: null },
+  bishop: { dmg: 38, cd: 1300, kind: 'hitscan', range: 320, bonus: 'diag', bonusDmg: 24 },
+  rook:   { dmg: 45, cd: 1600, kind: 'proj', speed: 45, range: 200, projR: 0.7, splash: 4.5, bonus: 'line', bonusDmg: 25 },
+  queen:  { dmg: 32, cd: 480, kind: 'hitscan', range: 260, bonus: 'both', bonusDmg: 16 },
 };
-const DASH = { dmg: 40, cd: 1100, speed: 760 };
 
 const SHRINKS = () => [
-  { warnAt: T(35000), fallAt: T(50000) },
-  { warnAt: T(80000), fallAt: T(95000) },
-  { warnAt: T(125000), fallAt: T(140000) },
+  { warnAt: T(60000), fallAt: T(80000) },
+  { warnAt: T(130000), fallAt: T(150000) },
+  { warnAt: T(200000), fallAt: T(220000) },
 ];
-const SUPPLY_EVERY = () => T(40000);
-const PROMO_MOVE_EVERY = () => T(30000);
-const PROMO_CHANNEL_MS = 1500;
+const SUPPLY_EVERY = () => T(45000);
+const PROMO_MOVE_EVERY = () => T(40000);
 
-// ---------------------------------------------------------------------------
-// Geometry helpers (exported for tests)
-// ---------------------------------------------------------------------------
-
-const DIAG = [45, 135, 225, 315].map((d) => (d * Math.PI) / 180);
-const ORTHO = [0, 90, 180, 270].map((d) => (d * Math.PI) / 180);
-const EIGHT = [...ORTHO, ...DIAG];
-
-function angDiff(a, b) {
-  let d = Math.abs(a - b) % (Math.PI * 2);
-  return d > Math.PI ? Math.PI * 2 - d : d;
-}
-
-export function snapDir(dx, dy, mode) {
-  const ang = Math.atan2(dy, dx);
-  if (!mode) {
-    const len = Math.hypot(dx, dy) || 1;
-    return { x: dx / len, y: dy / len };
-  }
-  const set = mode === 'diag' ? DIAG : mode === 'ortho' ? ORTHO : EIGHT;
-  let best = set[0];
-  for (const a of set) if (angDiff(ang, a) < angDiff(ang, best)) best = a;
-  return { x: Math.cos(best), y: Math.sin(best) };
-}
-
-// Is `target` standing in `shooter`'s firing line (CHECK)?
-export function inFiringLine(shooter, target, weapon) {
-  const w = WEAPONS[weapon];
-  if (!w || !w.speed) return false;
-  const dx = target.x - shooter.x;
-  const dy = target.y - shooter.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist > w.range || dist < 1) return false;
-  if (!w.snap) return dist < w.range * 0.8; // pawns: proximity threat
-  const dir = snapDir(dx, dy, w.snap);
-  // perpendicular distance from the snapped ray to the target
-  const along = dx * dir.x + dy * dir.y;
-  if (along <= 0) return false;
-  const perp = Math.abs(dx * dir.y - dy * dir.x);
-  return perp < PLAYER_R * 1.8;
-}
-
-export function tileRing(tx, ty) {
-  return Math.min(tx, ty, BOARD - 1 - tx, BOARD - 1 - ty);
-}
-
-export function isSafe(x, y, fallen) {
-  const tx = Math.floor(x / TILE);
-  const ty = Math.floor(y / TILE);
-  if (tx < 0 || tx >= BOARD || ty < 0 || ty >= BOARD) return false;
-  return tileRing(tx, ty) >= fallen;
-}
+let nextEntId = 1;
 
 // ---------------------------------------------------------------------------
 // Match setup
 // ---------------------------------------------------------------------------
 
-let nextEntId = 1;
-
-function scatterItems(types, cx, cy, spread) {
-  const items = [];
-  for (const type of types) {
-    const ang = Math.random() * Math.PI * 2;
-    const dist = 60 + Math.random() * spread;
-    const x = Math.min(WORLD - 40, Math.max(40, cx + Math.cos(ang) * dist));
-    const y = Math.min(WORLD - 40, Math.max(40, cy + Math.sin(ang) * dist));
-    items.push({
-      id: 'i' + nextEntId++,
-      type, x, y,
-      delay: 300 + Math.random() * 900,
-    });
+function outdoorPoint(world, rand, marginTiles = 0.8) {
+  for (let tries = 0; tries < 40; tries++) {
+    const x = TILE * marginTiles + rand() * (WORLD - TILE * marginTiles * 2);
+    const z = TILE * marginTiles + rand() * (WORLD - TILE * marginTiles * 2);
+    const y = groundAt(x, z) + 0.5;
+    let inside = false;
+    for (const b of world.boxes) {
+      if (b.kind !== 'prop' && pointInBox(b, x, y + 1, z, 1.2)) { inside = true; break; }
+    }
+    if (!inside) return { x, y: groundAt(x, z), z };
   }
-  return items;
+  return { x: WORLD / 2, y: groundAt(WORLD / 2, WORLD / 2), z: WORLD / 2 };
 }
 
-const SPAWNS = [
-  { x: TILE * 1.5, y: TILE * 1.5 }, { x: WORLD - TILE * 1.5, y: WORLD - TILE * 1.5 },
-  { x: WORLD - TILE * 1.5, y: TILE * 1.5 }, { x: TILE * 1.5, y: WORLD - TILE * 1.5 },
-];
-
 export function createMatch(room, playerList, startsAt, hooks) {
+  const seed = (Math.random() * 0xffffffff) >>> 0;
+  const world = buildWorld(seed);
+  const rand = (() => { let s = seed ^ 0x9e3779b9; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; })();
+
   const players = new Map();
   playerList.forEach((p, i) => {
+    const sp = world.spawns[i % world.spawns.length];
     players.set(p.id, {
       id: p.id, name: p.name, isBot: !!p.isBot, level: p.level || 5, color: i % 4,
-      x: SPAWNS[i % 4].x, y: SPAWNS[i % 4].y,
-      mvx: 0, mvy: 0, aimx: WORLD / 2, aimy: WORLD / 2,
-      hp: HP_MAX, weapon: null, mounted: false, horseHp: 0,
-      cdReadyAt: 0, lastHurtAt: 0, dead: false, place: 0,
-      dash: null, promoMs: 0, check: false,
-      botThinkAt: 0, botAttackSlop: (11 - (p.level || 5)) * 0.035,
+      x: sp.x, y: sp.y, z: sp.z, yaw: 0, pitch: 0,
+      hp: HP_MAX, weapon: null, dead: false,
+      cdReadyAt: 0, lastHurtAt: 0, lastPosAt: 0,
+      leapCharges: 0, banner: null, castleReadyAt: 0,
+      immuneUntil: 0, dodgeReadyAt: 0,
+      promoMs: 0, check: false, place: 0,
+      botThinkAt: 0, botGoal: null, botStuck: 0,
     });
   });
 
-  const initialTypes = ['pawn', 'pawn', 'pawn', 'pawn', 'bishop', 'bishop', 'rook', 'rook', 'knight', 'knight', 'crown'];
+  // initial loot, scattered outdoors
   const items = new Map();
-  for (const it of scatterItems(initialTypes, WORLD / 2, WORLD / 2, 260)) {
-    it.activeAt = startsAt + 900 + it.delay;
-    items.set(it.id, it);
+  const lootTable = ['pawn', 'pawn', 'pawn', 'pawn', 'bishop', 'bishop', 'rook', 'rook',
+    'knight', 'knight', 'banner', 'banner', 'crown', 'crown'];
+  for (const type of lootTable) {
+    const pt = outdoorPoint(world, rand);
+    items.set('i' + nextEntId, { id: 'i' + nextEntId++, type, x: pt.x, y: pt.y, z: pt.z });
   }
 
   const m = {
-    room, hooks, players, items,
+    room, hooks, world, seed, players, items,
     projectiles: [],
+    crates: [],
     events: [],
     startsAt,
     fallen: 0,
     shrinks: SHRINKS(),
     nextSupplyAt: startsAt + SUPPLY_EVERY(),
-    promo: { side: Math.floor(Math.random() * 4), movedAt: startsAt },
+    promo: { ...outdoorPoint(world, rand), movedAt: startsAt },
+    rand,
     deathOrder: [],
     finished: false,
     tickCount: 0,
@@ -172,10 +129,35 @@ export function destroyMatch(m) {
 
 export function startPayload(m) {
   return {
-    world: { tile: TILE, board: BOARD },
-    items: [...m.items.values()].map((i) => ({ id: i.id, type: i.type, x: i.x, y: i.y, delay: i.delay })),
-    players: [...m.players.values()].map((p) => ({ id: p.id, name: p.name, isBot: p.isBot, color: p.color, x: p.x, y: p.y })),
+    seed: m.seed,
+    players: [...m.players.values()].map((p) => ({
+      id: p.id, name: p.name, isBot: p.isBot, color: p.color, x: p.x, y: p.y, z: p.z,
+    })),
+    items: [...m.items.values()],
+    promo: { x: m.promo.x, z: m.promo.z },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isSafeTile(x, z, fallen) {
+  const tx = Math.floor(x / TILE), tz = Math.floor(z / TILE);
+  if (tx < 0 || tx >= BOARD || tz < 0 || tz >= BOARD) return false;
+  return tileRing(tx, tz) >= fallen;
+}
+
+function losClear(m, ax, ay, az, bx, by, bz) {
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist < 0.01) return true;
+  return raycast(m.world, ax, ay, az, dx / dist, dy / dist, dz / dist, dist) >= 0.999;
+}
+
+function dirOf(p) {
+  const cp = Math.cos(p.pitch);
+  return { x: Math.cos(p.yaw) * cp, y: Math.sin(p.pitch), z: Math.sin(p.yaw) * cp };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,97 +167,120 @@ export function startPayload(m) {
 export function handleInput(m, playerId, msg) {
   const p = m.players.get(playerId);
   if (!p || p.dead) return;
-  const mx = Number(msg.mx), my = Number(msg.my);
-  if (Number.isFinite(mx) && Number.isFinite(my)) {
-    const len = Math.hypot(mx, my);
-    p.mvx = len > 1 ? mx / len : mx;
-    p.mvy = len > 1 ? my / len : my;
+  const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z);
+  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+    p.x = Math.max(0, Math.min(WORLD, x));
+    p.z = Math.max(0, Math.min(WORLD, z));
+    p.y = Math.max(groundAt(p.x, p.z) - 0.5, Math.min(120, y));
+    p.lastPosAt = Date.now();
   }
-  const ax = Number(msg.ax), ay = Number(msg.ay);
-  if (Number.isFinite(ax) && Number.isFinite(ay)) {
-    p.aimx = Math.max(0, Math.min(WORLD, ax));
-    p.aimy = Math.max(0, Math.min(WORLD, ay));
+  if (Number.isFinite(Number(msg.yaw))) p.yaw = Number(msg.yaw);
+  if (Number.isFinite(Number(msg.pitch))) p.pitch = Math.max(-1.55, Math.min(1.55, Number(msg.pitch)));
+}
+
+function applyDamage(m, target, dmg, from, label) {
+  if (target.dead || m.finished) return;
+  const now = Date.now();
+  if (now < target.immuneUntil) {
+    m.events.push({ k: 'dodged', id: target.id, by: from?.id || null });
+    return;
+  }
+  target.lastHurtAt = now;
+  target.hp -= dmg;
+  m.events.push({ k: 'hit', id: target.id, by: from?.id || null, dmg, label: label || null });
+  if (target.hp <= 0) {
+    target.hp = 0;
+    target.dead = true;
+    m.deathOrder.push(target.id);
+    if (target.weapon && target.weapon !== 'fists') {
+      const drop = { id: 'i' + nextEntId++, type: target.weapon, x: target.x, y: groundAt(target.x, target.z), z: target.z };
+      m.items.set(drop.id, drop);
+      target.weapon = null;
+    }
+    m.events.push({ k: 'kill', id: target.id, by: from?.id || null, label: label || null });
   }
 }
 
-export function handleAttack(m, playerId) {
+export function handleAttack(m, playerId, msg = {}) {
   const p = m.players.get(playerId);
   const now = Date.now();
-  if (!p || p.dead || m.finished || now < m.startsAt || now < p.cdReadyAt || p.dash) return;
+  if (!p || p.dead || m.finished || now < m.startsAt || now < p.cdReadyAt) return;
 
-  const adx = p.aimx - p.x;
-  const ady = p.aimy - p.y;
+  const d = dirOf(p);
+  const ox = p.x, oy = p.y + EYE, oz = p.z;
+  const weapon = p.weapon && WEAPONS[p.weapon] ? p.weapon : 'fists';
+  const w = WEAPONS[weapon];
+  p.cdReadyAt = now + w.cd;
 
-  if (p.mounted) {
-    // Knight L-dash: two tiles along the snapped orthogonal, one perpendicular.
-    const main = snapDir(adx, ady, 'ortho');
-    const residual = { x: adx - (adx * main.x + ady * main.y) * main.x, y: ady - (adx * main.x + ady * main.y) * main.y };
-    let side = { x: -main.y, y: main.x };
-    if (residual.x * side.x + residual.y * side.y < 0) side = { x: main.y, y: -main.x };
-    p.dash = {
-      phase: 1,
-      dir: main, side,
-      remaining: TILE * 2,
-      hit: new Set(),
-    };
-    p.cdReadyAt = now + DASH.cd;
-    m.events.push({ k: 'dash', id: p.id });
-    return;
-  }
+  const align = lineAlignment(d.x, d.z);
+  const bonusOn = w.bonus && align &&
+    (w.bonus === 'both' || w.bonus === align);
+  const dmg = w.dmg + (bonusOn ? w.bonusDmg : 0);
+  const label = bonusOn ? (align === 'diag' ? 'TRUE DIAGONAL' : 'TRUE LINE') : null;
 
-  if (!p.weapon || p.weapon === 'crown') {
-    // royal melee bonk
-    const w = WEAPONS.melee;
-    p.cdReadyAt = now + w.cd;
-    const dir = snapDir(adx, ady, null);
-    const hx = p.x + dir.x * 34;
-    const hy = p.y + dir.y * 34;
-    m.events.push({ k: 'swing', id: p.id, x: hx, y: hy });
+  if (w.kind === 'melee') {
+    m.events.push({ k: 'swing', id: p.id });
     for (const q of m.players.values()) {
       if (q === p || q.dead) continue;
-      if (Math.hypot(q.x - hx, q.y - hy) < w.range) damage(m, q, w.dmg, p);
+      const dist = Math.hypot(q.x - ox, (q.y + 1) - oy, q.z - oz);
+      if (dist < w.range && losClear(m, ox, oy, oz, q.x, q.y + 1, q.z)) {
+        applyDamage(m, q, w.dmg, p, null);
+      }
     }
     return;
   }
 
-  const w = WEAPONS[p.weapon];
-  if (!w || !w.speed) return;
-  p.cdReadyAt = now + w.cd;
-  const dir = snapDir(adx, ady, w.snap);
+  if (w.kind === 'hitscan') {
+    let bestT = raycast(m.world, ox, oy, oz, d.x, d.y, d.z, w.range);
+    let victim = null;
+    for (const q of m.players.values()) {
+      if (q === p || q.dead) continue;
+      const t = sphereRayT(ox, oy, oz, d, w.range, q.x, q.y + 1, q.z, PLAYER_R + 0.35);
+      if (t !== null && t < bestT) { bestT = t; victim = q; }
+    }
+    m.events.push({
+      k: 'tracer', id: p.id, type: weapon,
+      x: ox, y: oy, z: oz, tx: ox + d.x * w.range * bestT, ty: oy + d.y * w.range * bestT, tz: oz + d.z * w.range * bestT,
+      bonus: !!bonusOn,
+    });
+    if (victim) applyDamage(m, victim, dmg, p, label);
+    return;
+  }
+
+  // projectile
   m.projectiles.push({
-    id: 'pr' + nextEntId++,
-    type: p.weapon, owner: p.id,
-    x: p.x + dir.x * (PLAYER_R + 6), y: p.y + dir.y * (PLAYER_R + 6),
-    dx: dir.x, dy: dir.y,
-    traveled: 0,
+    id: 'pr' + nextEntId++, type: weapon, owner: p.id,
+    x: ox + d.x * 1.2, y: oy + d.y * 1.2, z: oz + d.z * 1.2,
+    dx: d.x, dy: d.y, dz: d.z,
+    traveled: 0, dmg, label, bonus: !!bonusOn,
   });
-  m.events.push({ k: 'shoot', id: p.id, type: p.weapon });
+  m.events.push({ k: 'shoot', id: p.id, type: weapon });
+}
+
+function sphereRayT(ox, oy, oz, d, maxDist, cx, cy, cz, r) {
+  const fx = ox - cx, fy = oy - cy, fz = oz - cz;
+  const b = 2 * (fx * d.x + fy * d.y + fz * d.z);
+  const c = fx * fx + fy * fy + fz * fz - r * r;
+  const disc = b * b - 4 * c;
+  if (disc < 0) return null;
+  const t = (-b - Math.sqrt(disc)) / 2;
+  if (t < 0 || t > maxDist) return null;
+  return t / maxDist;
 }
 
 export function handlePickup(m, playerId) {
   const p = m.players.get(playerId);
   if (!p || p.dead || m.finished) return;
-  const now = Date.now();
-  let nearest = null;
-  let nd = PICKUP_R;
+  let nearest = null, nd = PICKUP_R;
   for (const it of m.items.values()) {
-    if (now < it.activeAt) continue;
-    const d = Math.hypot(it.x - p.x, it.y - p.y);
-    if (d < nd) { nd = d; nearest = it; }
+    const dd = Math.hypot(it.x - p.x, it.y - p.y, it.z - p.z);
+    if (dd < nd) { nd = dd; nearest = it; }
   }
   if (!nearest) return;
   takeItem(m, p, nearest);
 }
 
 function takeItem(m, p, it) {
-  if (it.type === 'knight') {
-    if (p.mounted) return;
-    p.mounted = true;
-    p.horseHp = HORSE_HP;
-    m.items.delete(it.id);
-    m.events.push({ k: 'mount', id: p.id });
-    return;
-  }
   if (it.type === 'crown') {
     if (p.hp >= HP_MAX) return;
     p.hp = Math.min(HP_MAX, p.hp + 50);
@@ -283,14 +288,72 @@ function takeItem(m, p, it) {
     m.events.push({ k: 'heal', id: p.id });
     return;
   }
-  // weapon swap: drop current at feet
-  if (p.weapon) {
-    const drop = { id: 'i' + nextEntId++, type: p.weapon, x: p.x, y: p.y, delay: 0, activeAt: Date.now() + 800 };
+  if (it.type === 'knight') {
+    p.leapCharges = Math.min(LEAP_CHARGES + 2, p.leapCharges + LEAP_CHARGES);
+    m.items.delete(it.id);
+    m.events.push({ k: 'pickup', id: p.id, type: 'knight' });
+    return;
+  }
+  if (it.type === 'banner') {
+    if (p.banner === 'stored' || p.banner) return;
+    p.banner = 'stored';
+    m.items.delete(it.id);
+    m.events.push({ k: 'pickup', id: p.id, type: 'banner' });
+    return;
+  }
+  // weapons swap
+  if (p.weapon && p.weapon !== 'fists') {
+    const drop = { id: 'i' + nextEntId++, type: p.weapon, x: p.x, y: groundAt(p.x, p.z), z: p.z };
     m.items.set(drop.id, drop);
   }
   p.weapon = it.type;
   m.items.delete(it.id);
   m.events.push({ k: 'pickup', id: p.id, type: it.type });
+}
+
+// Knight's Leap: client proposes a target; server validates range & charge.
+export function handleLeap(m, playerId, msg) {
+  const p = m.players.get(playerId);
+  if (!p || p.dead || m.finished || Date.now() < m.startsAt) return;
+  if (p.leapCharges <= 0) return;
+  const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+  if (Math.hypot(x - p.x, z - p.z) > LEAP_RANGE + 2 || Math.abs(y - p.y) > 25) return;
+  p.leapCharges--;
+  m.events.push({ k: 'leap', id: p.id, fx: p.x, fy: p.y, fz: p.z, tx: x, ty: y, tz: z });
+  p.x = Math.max(0, Math.min(WORLD, x));
+  p.z = Math.max(0, Math.min(WORLD, z));
+  p.y = Math.max(groundAt(p.x, p.z), Math.min(120, y));
+}
+
+// Castling: first press plants the banner, second press swaps with it.
+export function handleCastle(m, playerId) {
+  const p = m.players.get(playerId);
+  const now = Date.now();
+  if (!p || p.dead || m.finished || now < m.startsAt || now < p.castleReadyAt) return;
+  if (p.banner === 'stored') {
+    p.banner = { x: p.x, y: p.y, z: p.z };
+    p.castleReadyAt = now + CASTLE_CD_MS;
+    m.events.push({ k: 'banner', id: p.id, x: p.x, y: p.y, z: p.z });
+    return;
+  }
+  if (p.banner && typeof p.banner === 'object') {
+    const b = p.banner;
+    m.events.push({ k: 'castle', id: p.id, fx: p.x, fy: p.y, fz: p.z, tx: b.x, ty: b.y, tz: b.z });
+    p.x = b.x; p.y = b.y; p.z = b.z;
+    p.banner = null;
+    p.castleReadyAt = now + CASTLE_CD_MS;
+  }
+}
+
+// En passant dodge: brief immunity, client handles the dash itself.
+export function handleDodge(m, playerId) {
+  const p = m.players.get(playerId);
+  const now = Date.now();
+  if (!p || p.dead || m.finished || now < m.startsAt || now < p.dodgeReadyAt) return;
+  p.immuneUntil = now + DODGE_IMMUNE_MS;
+  p.dodgeReadyAt = now + DODGE_CD_MS;
+  m.events.push({ k: 'dodge', id: p.id });
 }
 
 export function playerLeft(m, playerId) {
@@ -304,120 +367,110 @@ export function playerLeft(m, playerId) {
 }
 
 // ---------------------------------------------------------------------------
+// Bots: roam outdoors, loot, take aligned shots, flee the void.
+// ---------------------------------------------------------------------------
+
+function botThink(m, p, now, dt) {
+  // movement toward goal with crude box avoidance
+  const speed = 8;
+  const arrive = (gx, gz) => Math.hypot(gx - p.x, gz - p.z) < 3;
+
+  if (!isSafeTile(p.x, p.z, m.fallen)) {
+    p.botGoal = { x: WORLD / 2, z: WORLD / 2 };
+  }
+
+  const enemies = [...m.players.values()].filter((q) => !q.dead && q !== p);
+  let target = null;
+  for (const e of enemies) {
+    if (!target || Math.hypot(e.x - p.x, e.z - p.z) < Math.hypot(target.x - p.x, target.z - p.z)) target = e;
+  }
+
+  if (now >= p.botThinkAt) {
+    p.botThinkAt = now + 500 - p.level * 25;
+    if (!p.weapon) {
+      let best = null, bd = Infinity;
+      for (const it of m.items.values()) {
+        if (it.type === 'crown' || it.type === 'banner') continue;
+        const dd = Math.hypot(it.x - p.x, it.z - p.z);
+        if (dd < bd) { bd = dd; best = it; }
+      }
+      p.botGoal = best ? { x: best.x, z: best.z, item: best.id } : p.botGoal;
+    } else if (target) {
+      const dd = Math.hypot(target.x - p.x, target.z - p.z);
+      const stand = p.weapon === 'pawn' ? 18 : 45;
+      if (dd > stand) p.botGoal = { x: target.x, z: target.z };
+      else if (!p.botGoal || arrive(p.botGoal.x, p.botGoal.z)) {
+        p.botGoal = { x: p.x + (m.rand() - 0.5) * 30, z: p.z + (m.rand() - 0.5) * 30 };
+      }
+    }
+    if (!p.botGoal || arrive(p.botGoal.x, p.botGoal.z)) {
+      const pt = outdoorPoint(m.world, m.rand, m.fallen + 0.8);
+      p.botGoal = { x: pt.x, z: pt.z };
+    }
+  }
+
+  // walk
+  if (p.botGoal) {
+    let gx = p.botGoal.x - p.x, gz = p.botGoal.z - p.z;
+    const len = Math.hypot(gx, gz) || 1;
+    gx /= len; gz /= len;
+    let nx = p.x + gx * speed * dt;
+    let nz = p.z + gz * speed * dt;
+    // crude avoidance: if the step lands inside a wall, slide perpendicular
+    let blocked = false;
+    for (const b of m.world.boxes) {
+      if (b.sy > 1.2 && pointInBox(b, nx, p.y + 1, nz, PLAYER_R)) { blocked = true; break; }
+    }
+    if (blocked) {
+      const px = -gz, pz = gx;
+      const side = p.botStuck % 2 === 0 ? 1 : -1;
+      nx = p.x + px * side * speed * dt;
+      nz = p.z + pz * side * speed * dt;
+      p.botStuck++;
+      let still = false;
+      for (const b of m.world.boxes) {
+        if (b.sy > 1.2 && pointInBox(b, nx, p.y + 1, nz, PLAYER_R)) { still = true; break; }
+      }
+      if (still) { nx = p.x; nz = p.z; }
+    }
+    p.x = Math.max(2, Math.min(WORLD - 2, nx));
+    p.z = Math.max(2, Math.min(WORLD - 2, nz));
+    p.y = groundAt(p.x, p.z);
+    if (p.botGoal.item) {
+      const it = m.items.get(p.botGoal.item);
+      if (it && Math.hypot(it.x - p.x, it.z - p.z) < PICKUP_R * 0.9) takeItem(m, p, it);
+      if (!m.items.has(p.botGoal.item)) p.botGoal = null;
+    }
+  }
+
+  // aim & shoot
+  if (target) {
+    const dx = target.x - p.x, dz = target.z - p.z;
+    const err = (11 - p.level) * 0.02 * (m.rand() - 0.5);
+    p.yaw = Math.atan2(dz, dx) + err;
+    const dist = Math.hypot(dx, dz);
+    p.pitch = Math.atan2((target.y + 1) - (p.y + EYE), dist) + err;
+    const w = p.weapon ? WEAPONS[p.weapon] : WEAPONS.fists;
+    const inRange = w.kind === 'melee' ? dist < w.range : dist < (w.range || 60) * 0.85;
+    if (inRange && losClear(m, p.x, p.y + EYE, p.z, target.x, target.y + 1, target.z)) {
+      if (m.rand() < 0.10 + p.level * 0.05) handleAttack(m, p.id);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
 
-function damage(m, q, dmg, from) {
-  if (q.dead) return;
-  q.lastHurtAt = Date.now();
-  if (q.mounted) {
-    q.horseHp -= dmg;
-    m.events.push({ k: 'hit', id: q.id, dmg, horse: true });
-    if (q.horseHp <= 0) {
-      q.mounted = false;
-      m.events.push({ k: 'horsedown', id: q.id });
-    }
-    return;
-  }
-  q.hp -= dmg;
-  m.events.push({ k: 'hit', id: q.id, dmg });
-  if (q.hp <= 0) {
-    q.hp = 0;
-    q.dead = true;
-    m.deathOrder.push(q.id);
-    if (q.weapon) {
-      const drop = { id: 'i' + nextEntId++, type: q.weapon, x: q.x, y: q.y, delay: 0, activeAt: Date.now() + 600 };
-      m.items.set(drop.id, drop);
-      q.weapon = null;
-    }
-    m.events.push({ k: 'kill', id: q.id, by: from?.id || null });
-  }
-}
-
-function botThink(m, p, now) {
-  if (now < p.botThinkAt) return;
-  p.botThinkAt = now + 320 - p.level * 18;
-
-  const enemies = [...m.players.values()].filter((q) => !q.dead && q !== p);
-  if (enemies.length === 0) return;
-  let target = enemies[0];
-  for (const e of enemies) {
-    if (Math.hypot(e.x - p.x, e.y - p.y) < Math.hypot(target.x - p.x, target.y - p.y)) target = e;
-  }
-
-  // stay on safe tiles above all
-  if (!isSafe(p.x, p.y, m.fallen)) {
-    const c = WORLD / 2;
-    const len = Math.hypot(c - p.x, c - p.y) || 1;
-    p.mvx = (c - p.x) / len;
-    p.mvy = (c - p.y) / len;
-    return;
-  }
-
-  // unarmed and not mounted: find a piece
-  if (!p.weapon && !p.mounted) {
-    let best = null, bd = Infinity;
-    for (const it of m.items.values()) {
-      if (it.type === 'crown' && p.hp > 60) continue;
-      const d = Math.hypot(it.x - p.x, it.y - p.y);
-      if (d < bd) { bd = d; best = it; }
-    }
-    if (best) {
-      const len = Math.hypot(best.x - p.x, best.y - p.y) || 1;
-      p.mvx = (best.x - p.x) / len;
-      p.mvy = (best.y - p.y) / len;
-      if (bd < PICKUP_R * 0.8) handlePickup(m, p.id);
-      return;
-    }
-  }
-
-  p.aimx = target.x;
-  p.aimy = target.y;
-  const dist = Math.hypot(target.x - p.x, target.y - p.y);
-  const w = p.weapon ? WEAPONS[p.weapon] : WEAPONS.melee;
-
-  let desired;
-  if (p.mounted) {
-    desired = { x: target.x, y: target.y };
-    if (dist < TILE * 2.4) handleAttack(m, p.id);
-  } else if (!p.weapon) {
-    desired = { x: target.x, y: target.y };
-    if (dist < WEAPONS.melee.range + PLAYER_R) handleAttack(m, p.id);
-  } else if (w.snap) {
-    // move toward the nearest aligned firing position at mid range
-    const dir = snapDir(p.x - target.x, p.y - target.y, w.snap);
-    const standOff = Math.min(w.range * 0.55, 320);
-    desired = {
-      x: Math.max(30, Math.min(WORLD - 30, target.x + dir.x * standOff)),
-      y: Math.max(30, Math.min(WORLD - 30, target.y + dir.y * standOff)),
-    };
-    if (inFiringLine(p, target, p.weapon) || Math.random() < p.botAttackSlop) {
-      handleAttack(m, p.id);
-    }
-  } else {
-    desired = { x: target.x, y: target.y };
-    if (dist < w.range * 0.8) handleAttack(m, p.id);
-  }
-
-  if (!isSafe(desired.x, desired.y, m.fallen)) desired = { x: WORLD / 2, y: WORLD / 2 };
-  const len = Math.hypot(desired.x - p.x, desired.y - p.y);
-  if (len < 14) {
-    p.mvx = 0; p.mvy = 0;
-  } else {
-    p.mvx = (desired.x - p.x) / len;
-    p.mvy = (desired.y - p.y) / len;
-  }
-}
-
 function tick(m) {
   const now = Date.now();
-  const dt = Math.min(0.1, (now - m.lastTick) / 1000);
+  const dt = Math.min(0.12, (now - m.lastTick) / 1000);
   m.lastTick = now;
   m.tickCount++;
   if (m.finished) return;
   const live = now >= m.startsAt;
 
-  // zone shrink
+  // zone
   for (let i = 0; i < m.shrinks.length; i++) {
     const s = m.shrinks[i];
     if (!s.warned && now >= m.startsAt + s.warnAt) {
@@ -431,78 +484,40 @@ function tick(m) {
     }
   }
 
-  // supply drops
+  // supply crates
   if (live && now >= m.nextSupplyAt) {
     m.nextSupplyAt = now + SUPPLY_EVERY();
-    const pool = ['pawn', 'bishop', 'rook', 'knight'];
-    const types = [pool[Math.floor(Math.random() * pool.length)]];
-    types.push(Math.random() < 0.3 ? 'queen' : pool[Math.floor(Math.random() * pool.length)]);
-    if (Math.random() < 0.4) types.push('crown');
-    const margin = TILE * (m.fallen + 1.2);
-    const cx = margin + Math.random() * (WORLD - margin * 2);
-    const cy = margin + Math.random() * (WORLD - margin * 2);
-    for (const it of scatterItems(types, cx, cy, 120)) {
-      it.activeAt = now + 900 + it.delay;
-      m.items.set(it.id, it);
+    const pt = outdoorPoint(m.world, m.rand, m.fallen + 0.6);
+    const types = ['bishop', 'rook', 'knight', 'queen', 'crown', 'banner'];
+    const loot = [types[Math.floor(m.rand() * types.length)], m.rand() < 0.35 ? 'queen' : 'crown'];
+    m.crates.push({ id: 'c' + nextEntId++, x: pt.x, z: pt.z, y: 120, groundY: pt.y, loot, landed: false });
+    m.events.push({ k: 'supply', x: pt.x, z: pt.z });
+  }
+  for (let i = m.crates.length - 1; i >= 0; i--) {
+    const c = m.crates[i];
+    c.y -= 12 * dt;
+    if (c.y <= c.groundY) {
+      for (const type of c.loot) {
+        const off = () => (m.rand() - 0.5) * 4;
+        m.items.set('i' + nextEntId, { id: 'i' + nextEntId++, type, x: c.x + off(), y: c.groundY, z: c.z + off() });
+      }
+      m.events.push({ k: 'crateland', x: c.x, z: c.z });
+      m.crates.splice(i, 1);
     }
-    m.events.push({ k: 'supply', x: cx, y: cy });
   }
 
-  // promotion rank relocation
+  // promotion square relocation
   if (live && now - m.promo.movedAt >= PROMO_MOVE_EVERY()) {
-    m.promo = { side: Math.floor(Math.random() * 4), movedAt: now };
-    m.events.push({ k: 'promomove', side: m.promo.side });
+    m.promo = { ...outdoorPoint(m.world, m.rand, m.fallen + 0.6), movedAt: now };
+    m.events.push({ k: 'promomove', x: m.promo.x, z: m.promo.z });
   }
 
   for (const p of m.players.values()) {
     if (p.dead) continue;
-    if (p.isBot && live) botThink(m, p, now);
-
-    // dashing knights
-    if (p.dash) {
-      const d = p.dash;
-      const dir = d.phase === 1 ? d.dir : d.side;
-      const step = DASH.speed * dt;
-      p.x += dir.x * step;
-      p.y += dir.y * step;
-      d.remaining -= step;
-      for (const q of m.players.values()) {
-        if (q === p || q.dead || d.hit.has(q.id)) continue;
-        if (Math.hypot(q.x - p.x, q.y - p.y) < PLAYER_R * 2.2) {
-          d.hit.add(q.id);
-          damage(m, q, DASH.dmg, p);
-        }
-      }
-      if (d.remaining <= 0) {
-        if (d.phase === 1) {
-          d.phase = 2;
-          d.remaining = TILE;
-        } else {
-          p.dash = null;
-        }
-      }
-    } else if (live) {
-      const speed = p.mounted ? MOUNT_SPEED : SPEED;
-      p.x += p.mvx * speed * dt;
-      p.y += p.mvy * speed * dt;
-    }
-    p.x = Math.max(PLAYER_R, Math.min(WORLD - PLAYER_R, p.x));
-    p.y = Math.max(PLAYER_R, Math.min(WORLD - PLAYER_R, p.y));
-
-    // auto-pickup when bare-handed
-    if (live && !p.weapon) {
-      for (const it of m.items.values()) {
-        if (now < it.activeAt || it.type === 'crown') continue;
-        if (it.type === 'knight' && p.mounted) continue;
-        if (Math.hypot(it.x - p.x, it.y - p.y) < PICKUP_R * 0.7) {
-          takeItem(m, p, it);
-          break;
-        }
-      }
-    }
+    if (p.isBot && live) botThink(m, p, now, dt);
 
     // off-board drain + regen
-    if (live && !isSafe(p.x, p.y, m.fallen)) {
+    if (live && !isSafeTile(p.x, p.z, m.fallen)) {
       p.lastHurtAt = now;
       p.hp -= OFFBOARD_DPS * dt;
       if (p.hp <= 0) {
@@ -515,8 +530,9 @@ function tick(m) {
       p.hp = Math.min(HP_MAX, p.hp + REGEN_PER_S * dt);
     }
 
-    // promotion run
-    if (live && p.weapon === 'pawn' && onPromoStrip(m, p)) {
+    // promotion channel
+    if (live && p.weapon === 'pawn' &&
+        Math.hypot(p.x - m.promo.x, p.z - m.promo.z) < 5 && Math.abs(p.y - groundAt(m.promo.x, m.promo.z)) < 3) {
       p.promoMs += dt * 1000;
       if (p.promoMs >= PROMO_CHANNEL_MS) {
         p.weapon = 'queen';
@@ -533,28 +549,56 @@ function tick(m) {
     const pr = m.projectiles[i];
     const w = WEAPONS[pr.type];
     const step = w.speed * dt;
-    pr.x += pr.dx * step;
-    pr.y += pr.dy * step;
-    pr.traveled += step;
-    let dead = pr.traveled > w.range || pr.x < -20 || pr.x > WORLD + 20 || pr.y < -20 || pr.y > WORLD + 20;
-    if (!dead) {
+    const t = raycast(m.world, pr.x, pr.y, pr.z, pr.dx, pr.dy, pr.dz, step);
+    pr.x += pr.dx * step * t;
+    pr.y += pr.dy * step * t;
+    pr.z += pr.dz * step * t;
+    pr.traveled += step * t;
+    let boom = t < 0.999 || pr.traveled >= w.range || pr.y <= groundAt(pr.x, pr.z);
+    let directHit = null;
+    if (!boom) {
       for (const q of m.players.values()) {
         if (q.dead || q.id === pr.owner) continue;
-        if (Math.hypot(q.x - pr.x, q.y - pr.y) < PLAYER_R + w.projR) {
-          damage(m, q, w.dmg, m.players.get(pr.owner));
-          dead = true;
+        if (Math.hypot(q.x - pr.x, (q.y + 1) - pr.y, q.z - pr.z) < PLAYER_R + (w.projR || 0.4) + 0.3) {
+          directHit = q;
+          boom = true;
           break;
         }
       }
     }
-    if (dead) m.projectiles.splice(i, 1);
+    if (boom) {
+      const from = m.players.get(pr.owner);
+      if (directHit) applyDamage(m, directHit, pr.dmg, from, pr.label);
+      if (w.splash) {
+        m.events.push({ k: 'boom', x: pr.x, y: pr.y, z: pr.z });
+        for (const q of m.players.values()) {
+          if (q.dead || q === directHit) continue;
+          const dd = Math.hypot(q.x - pr.x, (q.y + 1) - pr.y, q.z - pr.z);
+          if (dd < w.splash && q.id !== pr.owner) {
+            applyDamage(m, q, Math.round(pr.dmg * (1 - dd / w.splash)), from, pr.label);
+          }
+        }
+      }
+      m.projectiles.splice(i, 1);
+    }
   }
 
-  // CHECK! detection
-  for (const p of m.players.values()) {
-    if (p.dead) { p.check = false; continue; }
-    p.check = [...m.players.values()].some((e) =>
-      e !== p && !e.dead && e.weapon && inFiringLine(e, p, e.weapon));
+  // CHECK! - enemy armed, has LOS, and is aiming near you
+  if (m.tickCount % 8 === 0) {
+    for (const p of m.players.values()) {
+      if (p.dead) { p.check = false; continue; }
+      p.check = false;
+      for (const e of m.players.values()) {
+        if (e === p || e.dead || !e.weapon || e.weapon === 'fists') continue;
+        const dx = p.x - e.x, dy = (p.y + 1) - (e.y + EYE), dz = p.z - e.z;
+        const dist = Math.hypot(dx, dy, dz);
+        if (dist > 110) continue;
+        const d = dirOf(e);
+        const dot = (dx * d.x + dy * d.y + dz * d.z) / dist;
+        if (dot < 0.975) continue;
+        if (losClear(m, e.x, e.y + EYE, e.z, p.x, p.y + 1, p.z)) { p.check = true; break; }
+      }
+    }
   }
 
   // win condition
@@ -563,53 +607,45 @@ function tick(m) {
     m.finished = true;
     const winner = alive[0] || null;
     if (winner) m.deathOrder.push(winner.id);
-    const order = [...m.deathOrder].reverse(); // first = winner
+    const order = [...m.deathOrder].reverse();
     const placements = order.map((id, idx) => {
       const pl = m.players.get(id);
       return { id, name: pl.name, isBot: pl.isBot, place: idx + 1 };
     });
     m.hooks.broadcast(snapshot(m));
-    setTimeout(() => m.hooks.finish(winner ? { id: winner.id, name: winner.name } : null, placements), 900);
+    setTimeout(() => m.hooks.finish(winner ? { id: winner.id, name: winner.name } : null, placements), 1200);
     return;
   }
 
-  if (m.tickCount % SNAP_EVERY === 0) {
-    m.hooks.broadcast(snapshot(m));
-  }
-}
-
-function onPromoStrip(m, p) {
-  const inset = m.fallen * TILE;
-  const stripDepth = TILE * 0.8;
-  switch (m.promo.side) {
-    case 0: return p.y < inset + stripDepth && isSafe(p.x, p.y, m.fallen);
-    case 1: return p.x > WORLD - inset - stripDepth && isSafe(p.x, p.y, m.fallen);
-    case 2: return p.y > WORLD - inset - stripDepth && isSafe(p.x, p.y, m.fallen);
-    default: return p.x < inset + stripDepth && isSafe(p.x, p.y, m.fallen);
-  }
+  if (m.tickCount % SNAP_EVERY === 0) m.hooks.broadcast(snapshot(m));
 }
 
 function snapshot(m) {
   const now = Date.now();
   const nextShrink = m.shrinks.find((s) => !s.fell);
-  const msg = {
+  return {
     t: 'bs',
     players: [...m.players.values()].map((p) => ({
-      id: p.id, x: Math.round(p.x), y: Math.round(p.y),
-      hp: Math.round(p.hp), weapon: p.weapon, mounted: p.mounted,
-      dead: p.dead, check: p.check, cd: Math.max(0, p.cdReadyAt - now),
-      dash: !!p.dash, promo: p.promoMs > 0,
+      id: p.id,
+      x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10,
+      yaw: Math.round(p.yaw * 100) / 100, pitch: Math.round(p.pitch * 100) / 100,
+      hp: Math.round(p.hp), weapon: p.weapon, dead: p.dead, check: p.check,
+      cd: Math.max(0, p.cdReadyAt - now),
+      leap: p.leapCharges,
+      banner: typeof p.banner === 'object' && p.banner ? { x: p.banner.x, y: p.banner.y, z: p.banner.z } : p.banner,
+      dodgeCd: Math.max(0, p.dodgeReadyAt - now),
+      promo: p.promoMs > 0,
     })),
     projectiles: m.projectiles.map((pr) => ({
-      id: pr.id, type: pr.type, x: Math.round(pr.x), y: Math.round(pr.y), dx: pr.dx, dy: pr.dy,
+      id: pr.id, type: pr.type,
+      x: Math.round(pr.x * 10) / 10, y: Math.round(pr.y * 10) / 10, z: Math.round(pr.z * 10) / 10,
     })),
-    items: [...m.items.values()].map((i) => ({
-      id: i.id, type: i.type, x: Math.round(i.x), y: Math.round(i.y), ready: now >= i.activeAt,
-    })),
+    items: [...m.items.values()],
+    crates: m.crates.map((c) => ({ id: c.id, x: c.x, y: Math.round(c.y * 10) / 10, z: c.z })),
     fallen: m.fallen,
+    warnRing: m.shrinks.findIndex((s) => s.warned && !s.fell),
     shrinkIn: nextShrink ? Math.max(0, m.startsAt + nextShrink.fallAt - now) : null,
-    promoSide: m.promo.side,
+    promo: { x: m.promo.x, z: m.promo.z },
     events: m.events.splice(0),
   };
-  return msg;
 }

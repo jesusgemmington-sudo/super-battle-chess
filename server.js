@@ -610,12 +610,27 @@ function handleMessage(player, msg) {
     }
 
     case 'ba': {
-      if (room?.match && room.state === 'playing') royale.handleAttack(room.match, player.id);
+      if (room?.match && room.state === 'playing') royale.handleAttack(room.match, player.id, msg);
       break;
     }
 
     case 'bp': {
       if (room?.match && room.state === 'playing') royale.handlePickup(room.match, player.id);
+      break;
+    }
+
+    case 'bq': {
+      if (room?.match && room.state === 'playing') royale.handleLeap(room.match, player.id, msg);
+      break;
+    }
+
+    case 'bf': {
+      if (room?.match && room.state === 'playing') royale.handleCastle(room.match, player.id);
+      break;
+    }
+
+    case 'bd': {
+      if (room?.match && room.state === 'playing') royale.handleDodge(room.match, player.id);
       break;
     }
 
