@@ -6,6 +6,7 @@ import {
 } from './classic.js';
 import { pieceSVG } from './pieces.js';
 import { sfx } from './sfx.js';
+import * as br from './royale-client.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -28,6 +29,7 @@ const els = {
     home: $('#screen-home'),
     lobby: $('#screen-lobby'),
     game: $('#screen-game'),
+    royale: $('#screen-royale'),
   },
   board: $('#board'),
   boardWrap: $('#board-wrap'),
@@ -92,6 +94,7 @@ function resetToHome() {
   lobby = null;
   inGame = false;
   game = null;
+  br.stop();
   els.overlayEnd.classList.add('hidden');
   showScreen('home');
 }
@@ -120,6 +123,9 @@ function handleMessage(msg) {
       break;
     case 'gstate':
       applyGstate(msg);
+      break;
+    case 'bs':
+      br.onSnapshot(msg);
       break;
     case 'reject': {
       const rec = game?.els.get(msg.id);
@@ -265,22 +271,34 @@ function renderLobby() {
     b.classList.toggle('active', b.dataset.rules === (lobby.rules || 'battle')));
   segSpeed.querySelectorAll('.seg-btn').forEach((b) =>
     b.classList.toggle('active', b.dataset.speed === lobby.speed));
-  $('#speed-group').classList.toggle('hidden', lobby.rules === 'grandmaster');
+  $('#speed-group').classList.toggle('hidden', lobby.rules !== 'battle');
+  $('#mode-group').classList.toggle('hidden', lobby.rules === 'royale');
   $('#bot-row').classList.toggle('hidden', !isHost);
-  $('#rules-blurb').textContent = lobby.rules === 'grandmaster'
-    ? '👑 Real chess rules: turns, check & checkmate — plus earnable power-ups (no luck involved)'
-    : '⚡ No turns! Move any piece whenever it’s off cooldown. Capture the king to win.';
+  $('#rules-blurb').textContent =
+    lobby.rules === 'grandmaster'
+      ? '👑 Real chess rules: turns, check & checkmate — plus earnable power-ups (no luck involved)'
+      : lobby.rules === 'royale'
+        ? '🪂 Free-for-all! Drop in as a King, loot chess pieces as weapons, survive the shrinking board.'
+        : '⚡ No turns! Move any piece whenever it’s off cooldown. Capture the king to win.';
 
   // Start button + hint
-  const counts = [0, 0];
-  lobby.players.forEach((p) => counts[p.team]++);
-  const ready = counts[0] === perTeam && counts[1] === perTeam && lobby.players.length === perTeam * 2;
+  let ready;
+  let waitingText;
+  if (lobby.rules === 'royale') {
+    ready = lobby.players.length >= 2;
+    waitingText = 'Royale needs 2-4 fighters — invite friends or add bots!';
+  } else {
+    const counts = [0, 0];
+    lobby.players.forEach((p) => counts[p.team]++);
+    ready = counts[0] === perTeam && counts[1] === perTeam && lobby.players.length === perTeam * 2;
+    waitingText = `Waiting for players — ${lobby.mode} needs ${perTeam} per team`;
+  }
   const startBtn = $('#btn-start');
   startBtn.classList.toggle('hidden', !isHost);
   startBtn.disabled = !ready;
   const hint = $('#lobby-hint');
   if (!ready) {
-    hint.textContent = `Waiting for players — ${lobby.mode} needs ${perTeam} per team`;
+    hint.textContent = waitingText;
   } else {
     hint.textContent = isHost ? 'Everyone is here. Let’s go!' : 'Waiting for the host to start…';
   }
@@ -379,6 +397,14 @@ function cellAt(x, y) {
 // ---------------------------------------------------------------------------
 
 function startGame(msg) {
+  if (msg.rules === 'royale') {
+    inGame = true;
+    game = { rules: 'royale', players: msg.players, playing: true, myTeam: 0 };
+    els.overlayEnd.classList.add('hidden');
+    br.init(msg, { send, myId });
+    showScreen('royale');
+    return;
+  }
   buildBoard();
   els.piecesLayer.innerHTML = '';
   els.fxLayer.innerHTML = '';
@@ -966,6 +992,38 @@ function spawnSparks(x, y, colors, n) {
 function endGame(msg) {
   inGame = false;
   if (game) game.playing = false;
+
+  if (msg.reason === 'royale' && msg.royale) {
+    br.stop();
+    const win = msg.royale.winner;
+    const mine = win && win.id === myId;
+    $('#end-emoji').textContent = mine ? '🏆' : '👑';
+    const title = $('#end-title');
+    title.textContent = win ? `${win.name} wins!` : 'Nobody survived!';
+    title.className = '';
+    const myPlace = msg.royale.placements.find((p) => p.id === myId)?.place;
+    $('#end-sub').textContent =
+      `Last crown standing!${myPlace ? ` You placed #${myPlace} of ${msg.royale.placements.length}.` : ''}`;
+    const confetti = $('#confetti');
+    confetti.innerHTML = '';
+    if (mine) {
+      const colors = ['#ffd34d', '#ff6b57', '#5aa6ff', '#9ade6b', '#c39bff'];
+      for (let i = 0; i < 40; i++) {
+        const span = document.createElement('span');
+        span.style.left = `${Math.random() * 100}%`;
+        span.style.background = colors[i % colors.length];
+        span.style.animationDuration = `${2 + Math.random() * 2.5}s`;
+        span.style.animationDelay = `${Math.random() * 2}s`;
+        confetti.appendChild(span);
+      }
+      sfx.win();
+    } else {
+      sfx.lose();
+    }
+    els.overlayEnd.classList.remove('hidden');
+    return;
+  }
+
   clearSelection();
   $('#bonus-bar').classList.add('hidden');
   $('#overlay-promo').classList.add('hidden');

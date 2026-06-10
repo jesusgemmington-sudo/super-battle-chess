@@ -1,9 +1,12 @@
 // Cartoony inline-SVG chess pieces for Super Battle Chess.
 // Every piece is a chunky outlined shape with a happy little face.
 
-const PALETTES = [
+export const PALETTES = [
   { main: '#5aa6ff', dark: '#3a7de0', light: '#a8d2ff' }, // team 0 - blue
   { main: '#ff6b57', dark: '#d94a38', light: '#ffb3a0' }, // team 1 - red
+  { main: '#62cd6e', dark: '#3da34c', light: '#aef0b4' }, // royale - green
+  { main: '#b88af5', dark: '#9059d6', light: '#dcc4ff' }, // royale - purple
+  { main: '#ffc94d', dark: '#dd9f1b', light: '#ffe6a8' }, // royale - gold items
 ];
 
 const INK = '#2b2a40';

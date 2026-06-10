@@ -15,6 +15,7 @@ import {
   applyMoveRaw, endTurn, inCheck,
 } from './public/classic.js';
 import { BOT_NAMES, chooseGmMove, chooseBattleMove, battleReactionMs } from './bot.js';
+import * as royale from './royale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -90,6 +91,7 @@ function createRoom() {
     players: new Map(), // id -> player
     pieces: null,
     game: null, // grandmaster game: { state, moverIdx, lastMove }
+    match: null, // royale match
     startsAt: 0,
     countdownTimer: null,
     botTimer: null,
@@ -161,6 +163,10 @@ function serializePieces(room) {
 }
 
 function startGame(room) {
+  if (room.rules === 'royale') {
+    if (room.players.size < 2) return 'Royale needs at least 2 players (bots count!)';
+    return startRoyale(room);
+  }
   const counts = teamCounts(room);
   const perTeam = MODES[room.mode];
   if (room.players.size !== perTeam * 2 || counts[0] !== perTeam || counts[1] !== perTeam) {
@@ -198,18 +204,49 @@ function startGame(room) {
   return null;
 }
 
-function endGame(room, winner, reason) {
+function endGame(room, winner, reason, extra = {}) {
   if (room.state !== 'playing' && room.state !== 'countdown') return;
   clearTimeout(room.countdownTimer);
   clearTimeout(room.botTimer);
   clearInterval(room.botInterval);
   room.botInterval = null;
+  royale.destroyMatch(room.match);
+  room.match = null;
   for (const p of room.players.values()) if (p.isBot) p.nextActAt = 0;
   room.state = 'lobby';
   room.pieces = null;
   room.game = null;
-  broadcast(room, { t: 'end', winner, reason });
+  broadcast(room, { t: 'end', winner, reason, ...extra });
   broadcastLobby(room);
+}
+
+// ---------------------------------------------------------------------------
+// Royale mode
+// ---------------------------------------------------------------------------
+
+function startRoyale(room) {
+  room.state = 'countdown';
+  room.startsAt = Date.now() + COUNTDOWN_MS;
+  room.match = royale.createMatch(room, [...room.players.values()], room.startsAt, {
+    broadcast: (msg) => broadcast(room, msg),
+    finish: (winner, placements) => {
+      endGame(room, -3, 'royale', { royale: { winner, placements } });
+    },
+  });
+  broadcast(room, {
+    t: 'start',
+    rules: 'royale',
+    mode: room.mode,
+    in: COUNTDOWN_MS,
+    players: [...room.players.values()].map((p) => ({
+      id: p.id, name: p.name, team: p.team, isBot: !!p.isBot, level: p.level,
+    })),
+    royale: royale.startPayload(room.match),
+  });
+  room.countdownTimer = setTimeout(() => {
+    if (room.state === 'countdown') room.state = 'playing';
+  }, COUNTDOWN_MS);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,9 +257,14 @@ let nextBotId = 1;
 
 function addBot(room, level) {
   const counts = teamCounts(room);
+  let name = BOT_NAMES[level - 1];
+  let suffix = 2;
+  while ([...room.players.values()].some((p) => p.name === name)) {
+    name = `${BOT_NAMES[level - 1]} ${suffix++}`;
+  }
   const bot = {
     id: 'bot' + nextBotId++,
-    name: BOT_NAMES[level - 1],
+    name,
     team: counts[0] <= counts[1] ? 0 : 1,
     ws: null,
     isBot: true,
@@ -556,9 +598,24 @@ function handleMessage(player, msg) {
 
     case 'setRules': {
       if (!room || room.state !== 'lobby' || player.id !== room.hostId) return;
-      if (msg.rules !== 'battle' && msg.rules !== 'grandmaster') return;
+      if (msg.rules !== 'battle' && msg.rules !== 'grandmaster' && msg.rules !== 'royale') return;
       room.rules = msg.rules;
       broadcastLobby(room);
+      break;
+    }
+
+    case 'bi': {
+      if (room?.match) royale.handleInput(room.match, player.id, msg);
+      break;
+    }
+
+    case 'ba': {
+      if (room?.match && room.state === 'playing') royale.handleAttack(room.match, player.id);
+      break;
+    }
+
+    case 'bp': {
+      if (room?.match && room.state === 'playing') royale.handlePickup(room.match, player.id);
       break;
     }
 
@@ -653,6 +710,7 @@ function removeFromRoom(player) {
     clearTimeout(room.countdownTimer);
     clearTimeout(room.botTimer);
     clearInterval(room.botInterval);
+    royale.destroyMatch(room.match);
     rooms.delete(room.code);
     return;
   }
@@ -662,6 +720,12 @@ function removeFromRoom(player) {
   }
 
   if (room.state === 'playing' || room.state === 'countdown') {
+    if (room.match) {
+      royale.playerLeft(room.match, player.id);
+      broadcast(room, { t: 'playerLeft', name: player.name });
+      broadcastLobby(room);
+      return;
+    }
     const counts = teamCounts(room);
     if (counts[player.team] === 0) {
       endGame(room, player.team === 0 ? 1 : 0, 'forfeit');

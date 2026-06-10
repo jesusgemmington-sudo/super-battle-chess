@@ -70,7 +70,7 @@
         </div>
 
         <div class="options">
-          <div class="option-group">
+          <div class="option-group" id="mode-group">
             <div class="option-label">Mode</div>
             <div class="segmented" id="seg-mode">
               <button data-mode="1v1" class="seg-btn">1 vs 1</button>
@@ -82,6 +82,7 @@
             <div class="segmented" id="seg-rules">
               <button data-rules="battle" class="seg-btn">⚡ Battle</button>
               <button data-rules="grandmaster" class="seg-btn">👑 Grandmaster</button>
+              <button data-rules="royale" class="seg-btn">🪂 Royale</button>
             </div>
           </div>
           <div class="option-group" id="speed-group">
@@ -152,6 +153,25 @@
       </div>
 
       <div class="emote-tray" id="emote-tray"></div>
+    </section>
+
+    <!-- ============ ROYALE ============ -->
+    <section id="screen-royale" class="screen hidden">
+      <div class="br-hud-top">
+        <div id="br-alive" class="br-pill">👑 0 alive</div>
+        <div id="br-shrink" class="br-pill">🟩 board stable</div>
+        <div id="br-check" class="br-check hidden">⚠️ CHECK!</div>
+      </div>
+      <div id="br-wrap">
+        <canvas id="br-canvas" width="800" height="800"></canvas>
+        <div id="br-feed"></div>
+        <div id="br-banner" class="hidden"></div>
+      </div>
+      <div class="br-hud-bottom">
+        <div class="br-hpwrap"><div class="br-hpbar"><div id="br-hp"></div></div></div>
+        <div id="br-weapon" class="br-pill">✊ Royal Fists</div>
+        <div class="br-help">WASD/arrows move · mouse aim · click attack · E pick up / swap</div>
+      </div>
     </section>
   </main>
 

@@ -1,6 +1,6 @@
 # ♟ Super Battle Chess
 
-Multiplayer battle chess for **1v1** and **2v2**, with two rule sets:
+Multiplayer battle chess for **1v1** and **2v2**, with three rule sets:
 
 **⚡ Battle** — real-time, **no turns, no mercy**. Inspired by the frantic
 simultaneous-play energy of *Super Battle Golf*: both teams move at the same
@@ -20,6 +20,33 @@ for both sides alike — no randomness, no hidden information — and energy buy
 
 Checkmate detection is power-up aware: it isn't mate if a 6⚡ knight-jump can
 still save the king. In 2v2 Grandmaster, teammates alternate the team's moves.
+
+**🪂 Royale** — a 2–4 player free-for-all arena where **you are the King**.
+A supply box bursts over a giant lawn-chessboard and scatters golden pieces;
+loot them as weapons that **fire along their chess movement**:
+
+| Piece | What it does |
+|---|---|
+| ♙ Pawn | Quick short-range dagger throw |
+| ♗ Bishop | Sniper — shots snap to **diagonals only** |
+| ♖ Rook | Cannon — huge hits along **ranks & files only** |
+| ♘ Knight | A horse you **ride**: big speed boost + L-shaped trample dash (two squares, then one sideways) with its own HP |
+| ♕ Queen | Rare legendary — rapid bolts in all 8 directions |
+| 👑 Crown | Heals 50 HP |
+
+What makes it chess to the bone:
+
+- **The board is the zone.** Outer rings of tiles crack and fall away
+  (8×8 → 6×6 → 4×4 → 2×2). Off the board, your king bleeds out fast.
+- **CHECK!** Since every weapon fires along chess lines, the game warns you
+  the instant you're standing in an armed enemy's firing line — break the
+  diagonal or die on it. Every kill is a **CHECKMATE**.
+- **The Promotion Run.** A glowing promotion rank relocates around the board's
+  edge; channel on it while carrying a pawn and it promotes into the Queen —
+  announced to everyone, so expect company.
+
+WASD/arrows to move, mouse to aim, click to attack, E to pick up or swap.
+Last crown standing wins. Bots can fill the lobby here too.
 
 ## 🤖 Playing the computer
 
