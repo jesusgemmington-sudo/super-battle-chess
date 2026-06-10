@@ -3,7 +3,7 @@
 
 import WebSocket from 'ws';
 
-const URL = 'ws://localhost:3000';
+const URL = `ws://localhost:${process.argv[2] || 3000}`;
 let failures = 0;
 
 function check(cond, label) {

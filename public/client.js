@@ -214,7 +214,22 @@ function renderLobby() {
     for (const p of members) {
       const li = document.createElement('li');
       const crown = p.id === lobby.hostId ? '👑 ' : '';
-      li.textContent = `${crown}${p.name}`;
+      const botTag = p.isBot ? `🤖 ` : '';
+      li.textContent = `${crown}${botTag}${p.name}`;
+      if (p.isBot) {
+        const lv = document.createElement('span');
+        lv.className = 'you-tag';
+        lv.textContent = `Lv ${p.level}`;
+        li.appendChild(lv);
+        if (isHost) {
+          const rm = document.createElement('button');
+          rm.className = 'remove-bot';
+          rm.textContent = '✕';
+          rm.title = 'Remove computer';
+          rm.addEventListener('click', () => send({ t: 'removeBot', id: p.id }));
+          li.appendChild(rm);
+        }
+      }
       if (p.id === myId) {
         const tag = document.createElement('span');
         tag.className = 'you-tag';
@@ -251,6 +266,7 @@ function renderLobby() {
   segSpeed.querySelectorAll('.seg-btn').forEach((b) =>
     b.classList.toggle('active', b.dataset.speed === lobby.speed));
   $('#speed-group').classList.toggle('hidden', lobby.rules === 'grandmaster');
+  $('#bot-row').classList.toggle('hidden', !isHost);
   $('#rules-blurb').textContent = lobby.rules === 'grandmaster'
     ? '👑 Real chess rules: turns, check & checkmate — plus earnable power-ups (no luck involved)'
     : '⚡ No turns! Move any piece whenever it’s off cooldown. Capture the king to win.';
@@ -293,6 +309,23 @@ $('#seg-rules').addEventListener('click', (e) => {
 });
 
 $('#btn-start').addEventListener('click', () => send({ t: 'start' }));
+
+// Computer opponent controls
+const BOT_NAMES = ['Wood Pusher', 'Pawn Pusher', 'Rook Rookie', 'Bishop Bonker', 'Castle Crusher',
+  'Fork Fiend', 'Tactic Tonic', 'Sharp Silicon', 'Deep Sprocket', 'GM Gizmo'];
+const botLevelSelect = $('#bot-level');
+for (let lv = 1; lv <= 10; lv++) {
+  const opt = document.createElement('option');
+  opt.value = lv;
+  opt.textContent = `Lv ${lv} · ${BOT_NAMES[lv - 1]}`;
+  botLevelSelect.appendChild(opt);
+}
+botLevelSelect.value = '5';
+
+$('#btn-add-bot').addEventListener('click', () => {
+  send({ t: 'addBot', level: Number(botLevelSelect.value) });
+  sfx.select();
+});
 
 $('#btn-leave').addEventListener('click', () => {
   send({ t: 'leave' });
@@ -412,7 +445,7 @@ function renderHud() {
     const hud = team === 0 ? $('#hud-left') : $('#hud-right');
     const names = game.players
       .filter((p) => p.team === team)
-      .map((p) => (p.id === myId ? `⭐ ${p.name}` : p.name))
+      .map((p) => (p.id === myId ? `⭐ ${p.name}` : p.isBot ? `🤖 ${p.name}` : p.name))
       .join(' & ');
     hud.querySelector('.hud-names').textContent = names;
     hud.querySelector('.hud-caps').innerHTML = '';
@@ -732,7 +765,8 @@ function renderGmPanel() {
   // Turn banner
   const banner = $('#turn-banner');
   const myMove = gm.mover === myId;
-  const moverName = game.players.find((p) => p.id === gm.mover)?.name || '…';
+  const moverP = game.players.find((p) => p.id === gm.mover);
+  const moverName = moverP ? `${moverP.isBot ? '🤖 ' : ''}${moverP.name}` : '…';
   const isBonus = !!gm.pending;
   banner.classList.remove('hidden', 'my-turn', 'in-check');
   if (isBonus) {

@@ -1,6 +1,6 @@
 {
   "name": "super-battle-chess",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Real-time multiplayer battle chess - no turns, all chaos. 1v1 and 2v2.",
   "type": "module",
   "main": "server.js",

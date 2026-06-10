@@ -14,6 +14,7 @@ import {
   COSTS, createState, findPiece, legalMovesFor, bonusMovesFor,
   applyMoveRaw, endTurn, inCheck,
 } from './public/classic.js';
+import { BOT_NAMES, chooseGmMove, chooseBattleMove, battleReactionMs } from './bot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -91,13 +92,15 @@ function createRoom() {
     game: null, // grandmaster game: { state, moverIdx, lastMove }
     startsAt: 0,
     countdownTimer: null,
+    botTimer: null,
+    botInterval: null,
   };
   rooms.set(code, room);
   return room;
 }
 
 function send(player, msg) {
-  if (player.ws.readyState === player.ws.OPEN) {
+  if (player.ws && player.ws.readyState === player.ws.OPEN) {
     player.ws.send(JSON.stringify(msg));
   }
 }
@@ -105,7 +108,7 @@ function send(player, msg) {
 function broadcast(room, msg) {
   const data = JSON.stringify(msg);
   for (const p of room.players.values()) {
-    if (p.ws.readyState === p.ws.OPEN) p.ws.send(data);
+    if (p.ws && p.ws.readyState === p.ws.OPEN) p.ws.send(data);
   }
 }
 
@@ -118,7 +121,9 @@ function lobbySnapshot(room) {
     speed: room.speed,
     hostId: room.hostId,
     state: room.state,
-    players: [...room.players.values()].map((p) => ({ id: p.id, name: p.name, team: p.team })),
+    players: [...room.players.values()].map((p) => ({
+      id: p.id, name: p.name, team: p.team, isBot: !!p.isBot, level: p.level,
+    })),
   };
 }
 
@@ -170,7 +175,9 @@ function startGame(room) {
     speed: room.speed,
     cooldown: SPEEDS[room.speed],
     in: COUNTDOWN_MS,
-    players: [...room.players.values()].map((p) => ({ id: p.id, name: p.name, team: p.team })),
+    players: [...room.players.values()].map((p) => ({
+      id: p.id, name: p.name, team: p.team, isBot: !!p.isBot, level: p.level,
+    })),
   };
   if (room.rules === 'grandmaster') {
     room.game = { state: createState(), moverIdx: [0, 0], lastMove: null };
@@ -186,17 +193,85 @@ function startGame(room) {
   room.countdownTimer = setTimeout(() => {
     if (room.state === 'countdown') room.state = 'playing';
   }, COUNTDOWN_MS);
+  if (room.rules === 'grandmaster') maybeBotMove(room);
+  else startBattleBots(room);
   return null;
 }
 
 function endGame(room, winner, reason) {
   if (room.state !== 'playing' && room.state !== 'countdown') return;
   clearTimeout(room.countdownTimer);
+  clearTimeout(room.botTimer);
+  clearInterval(room.botInterval);
+  room.botInterval = null;
+  for (const p of room.players.values()) if (p.isBot) p.nextActAt = 0;
   room.state = 'lobby';
   room.pieces = null;
   room.game = null;
   broadcast(room, { t: 'end', winner, reason });
   broadcastLobby(room);
+}
+
+// ---------------------------------------------------------------------------
+// Bots
+// ---------------------------------------------------------------------------
+
+let nextBotId = 1;
+
+function addBot(room, level) {
+  const counts = teamCounts(room);
+  const bot = {
+    id: 'bot' + nextBotId++,
+    name: BOT_NAMES[level - 1],
+    team: counts[0] <= counts[1] ? 0 : 1,
+    ws: null,
+    isBot: true,
+    level,
+    lastEmote: 0,
+    nextActAt: 0,
+    room,
+  };
+  room.players.set(bot.id, bot);
+  return bot;
+}
+
+// Grandmaster: when the current mover is a bot, think then move.
+function maybeBotMove(room) {
+  if (!room.game || (room.state !== 'playing' && room.state !== 'countdown')) return;
+  if (room.game.state.result) return;
+  const mover = room.players.get(currentMover(room));
+  if (!mover?.isBot) return;
+  clearTimeout(room.botTimer);
+  const gameRef = room.game;
+  const waitForGo = Math.max(0, room.startsAt - Date.now());
+  const delay = waitForGo + 600 + Math.random() * 700;
+  room.botTimer = setTimeout(() => {
+    if (room.game !== gameRef || room.state !== 'playing') return;
+    if (room.players.get(currentMover(room)) !== mover) return;
+    const choice = chooseGmMove(room.game.state, mover.team, mover.level);
+    if (!choice) return; // no moves: endTurn already declared the result
+    handleGmMove(room, mover, { id: choice.pieceId, x: choice.x, y: choice.y, promo: 'queen' });
+  }, delay);
+}
+
+// Battle: bots act on their own reaction timers.
+function startBattleBots(room) {
+  if (![...room.players.values()].some((p) => p.isBot)) return;
+  room.botInterval = setInterval(() => {
+    if (room.state !== 'playing' || !room.pieces) return;
+    const now = Date.now();
+    for (const p of room.players.values()) {
+      if (!p.isBot) continue;
+      if (!p.nextActAt) {
+        p.nextActAt = room.startsAt + 400 + Math.random() * battleReactionMs(p.level);
+        continue;
+      }
+      if (now < p.nextActAt) continue;
+      const move = chooseBattleMove(room.pieces, p.team, p.level, now);
+      if (move) handleMove(room, p, move);
+      p.nextActAt = now + battleReactionMs(p.level) * (0.75 + Math.random() * 0.5);
+    }
+  }, 250);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +318,8 @@ function finishGmTurn(room, event) {
   broadcast(room, gmPayload(room, event));
   if (result) {
     endGame(room, result.winner, result.reason);
+  } else {
+    maybeBotMove(room);
   }
 }
 
@@ -485,6 +562,28 @@ function handleMessage(player, msg) {
       break;
     }
 
+    case 'addBot': {
+      if (!room || room.state !== 'lobby' || player.id !== room.hostId) return;
+      if (room.players.size >= 4) {
+        send(player, { t: 'error', msg: 'The room is full.' });
+        return;
+      }
+      const level = Math.min(10, Math.max(1, Math.floor(Number(msg.level)) || 5));
+      addBot(room, level);
+      broadcastLobby(room);
+      break;
+    }
+
+    case 'removeBot': {
+      if (!room || room.state !== 'lobby' || player.id !== room.hostId) return;
+      const bot = room.players.get(msg.id);
+      if (bot?.isBot) {
+        room.players.delete(bot.id);
+        broadcastLobby(room);
+      }
+      break;
+    }
+
     case 'setTeam': {
       if (!room || room.state !== 'lobby') return;
       const team = msg.team === 1 ? 1 : 0;
@@ -549,14 +648,17 @@ function removeFromRoom(player) {
   player.room = null;
   room.players.delete(player.id);
 
-  if (room.players.size === 0) {
+  const humans = [...room.players.values()].filter((p) => !p.isBot);
+  if (humans.length === 0) {
     clearTimeout(room.countdownTimer);
+    clearTimeout(room.botTimer);
+    clearInterval(room.botInterval);
     rooms.delete(room.code);
     return;
   }
 
   if (room.hostId === player.id) {
-    room.hostId = room.players.values().next().value.id;
+    room.hostId = humans[0].id;
   }
 
   if (room.state === 'playing' || room.state === 'countdown') {
@@ -566,7 +668,10 @@ function removeFromRoom(player) {
       return;
     }
     broadcast(room, { t: 'playerLeft', name: player.name });
-    if (room.game) broadcast(room, gmPayload(room)); // mover may have changed
+    if (room.game) {
+      broadcast(room, gmPayload(room)); // mover may have changed
+      maybeBotMove(room);
+    }
   }
   broadcastLobby(room);
 }

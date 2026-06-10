@@ -21,6 +21,20 @@ for both sides alike — no randomness, no hidden information — and energy buy
 Checkmate detection is power-up aware: it isn't mate if a 6⚡ knight-jump can
 still save the king. In 2v2 Grandmaster, teammates alternate the team's moves.
 
+## 🤖 Playing the computer
+
+The host can add computer players (difficulty **1–10**) to any open slot from
+the lobby — face one 1v1, team up with one in 2v2, or watch bots fight.
+The computer plays both rule sets:
+
+- **Grandmaster:** a real engine — iterative-deepening negamax with alpha-beta
+  pruning and capture quiescence over the same rules module the game uses.
+  Level scales search depth (1–5 plies + capture extensions), evaluation
+  accuracy, and blunder chance: Lv 1 *Wood Pusher* shoves wood, Lv 10
+  *GM Gizmo* will punish a hanging piece every time.
+- **Battle:** a reaction-time bot — quicker and sharper at higher levels,
+  guards its king, snaps up captures, and goes for yours.
+
 ## Quick start
 
 Requires [Node.js](https://nodejs.org) 18+ (already installed if Claude set this up for you).

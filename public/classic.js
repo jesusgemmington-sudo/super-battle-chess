@@ -220,7 +220,7 @@ function pseudoMoves(state, p, opts = {}) {
   return moves;
 }
 
-function cloneState(state) {
+export function cloneState(state) {
   return {
     pieces: state.pieces.map((p) => ({ ...p })),
     turn: state.turn,
