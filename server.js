@@ -410,6 +410,20 @@ setInterval(() => {
 
 // ---------------------------------------------------------------------------
 
+function onListenError(err) {
+  if (err.code === 'EADDRINUSE') {
+    console.log('');
+    console.log(`  Port ${PORT} is already in use — Super Battle Chess is probably already running.`);
+    console.log(`  Just open http://localhost:${PORT} to play.`);
+    console.log('');
+    console.log(`  (To run a second server anyway, set a different port: set PORT=3001 && node server.js)`);
+    process.exit(1);
+  }
+  throw err;
+}
+httpServer.on('error', onListenError);
+wss.on('error', onListenError);
+
 httpServer.listen(PORT, () => {
   console.log('');
   console.log('  ♟  SUPER BATTLE CHESS server is running!');
