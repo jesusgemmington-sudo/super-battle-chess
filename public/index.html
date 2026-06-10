@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Super Battle Chess</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M20 75 L20 35 L35 48 L50 22 L65 48 L80 35 L80 75 Z' fill='%23ffd34d' stroke='%232b2a40' stroke-width='7' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Lilita+One&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="cloud c1"></div>
+    <div class="cloud c2"></div>
+    <div class="cloud c3"></div>
+    <div class="cloud c4"></div>
+  </div>
+
+  <main>
+    <!-- ============ HOME ============ -->
+    <section id="screen-home" class="screen">
+      <div class="logo">
+        <span class="logo-line logo-super">SUPER</span>
+        <span class="logo-line logo-battle">BATTLE</span>
+        <span class="logo-line logo-chess">CHESS</span>
+      </div>
+      <div class="logo-mascots">
+        <div id="mascot-left" class="mascot"></div>
+        <div id="mascot-right" class="mascot"></div>
+      </div>
+      <div class="card home-card">
+        <label class="field-label" for="name-input">Your nickname</label>
+        <input id="name-input" maxlength="14" placeholder="e.g. KnightRider" autocomplete="off">
+        <button id="btn-create" class="btn btn-primary btn-big">Create a Game</button>
+        <div class="divider"><span>or join a friend</span></div>
+        <div class="join-row">
+          <input id="code-input" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false">
+          <button id="btn-join" class="btn btn-secondary">Join</button>
+        </div>
+      </div>
+      <p class="tagline">Real-time chess. No turns. No mercy.</p>
+    </section>
+
+    <!-- ============ LOBBY ============ -->
+    <section id="screen-lobby" class="screen hidden">
+      <div class="card lobby-card">
+        <div class="lobby-head">
+          <div class="lobby-head-label">ROOM CODE</div>
+          <div class="lobby-code-row">
+            <div id="lobby-code" class="room-code">····</div>
+            <button id="btn-copy" class="btn btn-mini" title="Copy invite link">Copy link</button>
+          </div>
+          <div class="lobby-head-sub">Friends join with this code (same site)</div>
+        </div>
+
+        <div class="teams">
+          <div class="team-col team-col-blue">
+            <h3>Blue</h3>
+            <ul id="team0-list" class="team-list"></ul>
+            <button class="btn btn-team btn-team-blue" data-team="0">Join Blue</button>
+          </div>
+          <div class="vs-badge">VS</div>
+          <div class="team-col team-col-red">
+            <h3>Red</h3>
+            <ul id="team1-list" class="team-list"></ul>
+            <button class="btn btn-team btn-team-red" data-team="1">Join Red</button>
+          </div>
+        </div>
+
+        <div class="options">
+          <div class="option-group">
+            <div class="option-label">Mode</div>
+            <div class="segmented" id="seg-mode">
+              <button data-mode="1v1" class="seg-btn">1 vs 1</button>
+              <button data-mode="2v2" class="seg-btn">2 vs 2</button>
+            </div>
+          </div>
+          <div class="option-group">
+            <div class="option-label">Speed</div>
+            <div class="segmented" id="seg-speed">
+              <button data-speed="chill" class="seg-btn">🐢 Chill</button>
+              <button data-speed="classic" class="seg-btn">⚔️ Classic</button>
+              <button data-speed="frenzy" class="seg-btn">🔥 Frenzy</button>
+            </div>
+          </div>
+        </div>
+
+        <button id="btn-start" class="btn btn-primary btn-big">Start Battle!</button>
+        <div id="lobby-hint" class="lobby-hint"></div>
+        <button id="btn-leave" class="btn-text">← Leave room</button>
+      </div>
+    </section>
+
+    <!-- ============ GAME ============ -->
+    <section id="screen-game" class="screen hidden">
+      <div class="hud">
+        <div id="hud-left" class="hud-team hud-blue">
+          <div class="hud-names"></div>
+          <div class="hud-caps"></div>
+        </div>
+        <div class="hud-mid">⚔️</div>
+        <div id="hud-right" class="hud-team hud-red">
+          <div class="hud-names"></div>
+          <div class="hud-caps"></div>
+        </div>
+      </div>
+
+      <div id="board-wrap">
+        <div id="board"></div>
+        <div id="pieces-layer"></div>
+        <div id="fx-layer"></div>
+        <div id="emote-layer"></div>
+        <div id="countdown" class="hidden"></div>
+      </div>
+
+      <div class="emote-tray" id="emote-tray"></div>
+    </section>
+  </main>
+
+  <!-- ============ END OVERLAY ============ -->
+  <div id="overlay-end" class="overlay hidden">
+    <div class="card end-card">
+      <div id="confetti"></div>
+      <div id="end-emoji" class="end-emoji">🏆</div>
+      <h2 id="end-title">Blue wins!</h2>
+      <p id="end-sub"></p>
+      <button id="btn-back-lobby" class="btn btn-primary btn-big">Back to Lobby</button>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+
+  <script type="module" src="client.js"></script>
+</body>
+</html>
