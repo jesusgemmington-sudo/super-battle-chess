@@ -1,6 +1,9 @@
 // Super Battle Chess - client.
 
-import { SIZE, buildGrid, computeMoves, isLegalMove } from './rules.js';
+import { SIZE, buildGrid, computeMoves, isLegalMove, promotionRow } from './rules.js';
+import {
+  COSTS, grid as gmGrid, legalMovesFor, bonusMovesFor, ENERGY_CAP,
+} from './classic.js';
 import { pieceSVG } from './pieces.js';
 import { sfx } from './sfx.js';
 
@@ -114,6 +117,9 @@ function handleMessage(msg) {
       break;
     case 'move':
       applyMove(msg);
+      break;
+    case 'gstate':
+      applyGstate(msg);
       break;
     case 'reject': {
       const rec = game?.els.get(msg.id);
@@ -231,15 +237,23 @@ function renderLobby() {
     btn.classList.toggle('hidden-btn', !me || me.team === Number(btn.dataset.team));
   });
 
-  // Mode / speed segments
+  // Mode / rules / speed segments
   const segMode = $('#seg-mode');
+  const segRules = $('#seg-rules');
   const segSpeed = $('#seg-speed');
   segMode.classList.toggle('locked', !isHost);
+  segRules.classList.toggle('locked', !isHost);
   segSpeed.classList.toggle('locked', !isHost);
   segMode.querySelectorAll('.seg-btn').forEach((b) =>
     b.classList.toggle('active', b.dataset.mode === lobby.mode));
+  segRules.querySelectorAll('.seg-btn').forEach((b) =>
+    b.classList.toggle('active', b.dataset.rules === (lobby.rules || 'battle')));
   segSpeed.querySelectorAll('.seg-btn').forEach((b) =>
     b.classList.toggle('active', b.dataset.speed === lobby.speed));
+  $('#speed-group').classList.toggle('hidden', lobby.rules === 'grandmaster');
+  $('#rules-blurb').textContent = lobby.rules === 'grandmaster'
+    ? '👑 Real chess rules: turns, check & checkmate — plus earnable power-ups (no luck involved)'
+    : '⚡ No turns! Move any piece whenever it’s off cooldown. Capture the king to win.';
 
   // Start button + hint
   const counts = [0, 0];
@@ -271,6 +285,11 @@ $('#seg-mode').addEventListener('click', (e) => {
 $('#seg-speed').addEventListener('click', (e) => {
   const speed = e.target.dataset?.speed;
   if (speed && lobby?.hostId === myId) send({ t: 'setSpeed', speed });
+});
+
+$('#seg-rules').addEventListener('click', (e) => {
+  const rules = e.target.dataset?.rules;
+  if (rules && lobby?.hostId === myId) send({ t: 'setRules', rules });
 });
 
 $('#btn-start').addEventListener('click', () => send({ t: 'start' }));
@@ -336,6 +355,7 @@ function startGame(msg) {
 
   inGame = true;
   game = {
+    rules: msg.rules || 'battle',
     cooldown: msg.cooldown,
     players: msg.players,
     flip: msg.players.find((p) => p.id === myId)?.team === 1,
@@ -347,11 +367,25 @@ function startGame(msg) {
     selected: null,
   };
 
+  const isGm = game.rules === 'grandmaster';
+  els.screens.game.classList.toggle('gm', isGm);
+  $('#power-tray').classList.toggle('hidden', !isGm);
+  $('#turn-banner').classList.toggle('hidden', !isGm);
+  $('#bonus-bar').classList.add('hidden');
+  gm = null;
+  armed.spirit = false;
+  armed.wind = false;
+  armed.shieldMode = false;
+
   reconcilePieces(msg.pieces);
   renderHud();
   showScreen('game');
   runCountdown(msg.in);
-  requestAnimationFrame(cooldownLoop);
+  if (isGm) {
+    applyGstate(msg.gm);
+  } else {
+    requestAnimationFrame(cooldownLoop);
+  }
 }
 
 function runCountdown(ms) {
@@ -368,6 +402,7 @@ function runCountdown(ms) {
   setTimeout(() => {
     showNum('GO!');
     if (game) game.playing = true;
+    if (game?.rules === 'grandmaster') renderGmPanel();
   }, ms);
   setTimeout(() => cd.classList.add('hidden'), ms + 600);
 }
@@ -435,7 +470,7 @@ function clearSelection() {
     rec?.el.classList.remove('selected');
   }
   if (game) game.selected = null;
-  cells.forEach((c) => c.classList.remove('sel', 'dot', 'ring'));
+  cells.forEach((c) => c.classList.remove('sel', 'dot', 'ring', 'sdot'));
 }
 
 function highlightSelection() {
@@ -452,6 +487,10 @@ function highlightSelection() {
 
 function onCellTap(vx, vy) {
   if (!game || !game.playing) return;
+  if (game.rules === 'grandmaster') {
+    onCellTapGm(vx, vy);
+    return;
+  }
   const { x, y } = toModel(vx, vy);
   const grid = gridNow();
   const target = grid[y][x];
@@ -595,6 +634,298 @@ function cooldownLoop() {
 }
 
 // ---------------------------------------------------------------------------
+// Grandmaster mode
+// ---------------------------------------------------------------------------
+
+let gm = null; // latest gstate from the server
+const armed = { spirit: false, wind: false, shieldMode: false };
+let lastTurnKey = '';
+
+// Rebuild a rules-engine state object from the latest server snapshot.
+function gmRulesState() {
+  return {
+    pieces: gm.pieces.map((p) => ({ ...p, alive: true })),
+    turn: gm.turn,
+    ep: gm.ep,
+    halfmove: 0,
+    energy: [...gm.energy],
+    shields: Object.fromEntries(gm.shields.map((id) => [id, true])),
+    pending: null,
+    history: {},
+    result: null,
+  };
+}
+
+function applyGstate(msg) {
+  if (!game) return;
+
+  // FX for what just happened (before reconcile removes captured pieces).
+  const ev = msg.event;
+  if (ev) {
+    if (ev.captured) {
+      const rec = game.els.get(ev.captured.id);
+      if (rec) {
+        rec.el.classList.add('dying');
+        const dead = rec.el;
+        game.els.delete(ev.captured.id);
+        setTimeout(() => dead.remove(), 350);
+      }
+      spawnCaptureFx(ev.to.x, ev.to.y, false);
+      addCaptureTrophy(ev.captured);
+      sfx.capture();
+    } else if (ev.kind === 'move') {
+      sfx.move();
+    }
+    if (ev.kind === 'shield') sfx.join();
+    if (ev.spirit) spawnSparks(ev.to.x, ev.to.y, ['#b88af5', '#d8b6ff', '#fff'], 14);
+    if (ev.promoted) sfx.promote();
+    if (ev.castle) sfx.move();
+  }
+
+  const wasCheck = gm?.check && gm?.turn === game.myTeam;
+  gm = msg;
+
+  reconcilePieces(msg.pieces);
+
+  // Shields + check visuals
+  for (const [id, rec] of game.els) {
+    rec.el.classList.toggle('shielded', gm.shields.includes(id));
+    rec.el.classList.remove('in-check');
+  }
+  if (gm.check) {
+    const king = gm.pieces.find((p) => p.type === 'king' && p.team === gm.turn);
+    if (king) game.els.get(king.id)?.el.classList.add('in-check');
+  }
+  if (gm.check && gm.turn === game.myTeam && !wasCheck) sfx.check();
+
+  // Last-move highlight
+  cells.forEach((c) => c.classList.remove('last-move'));
+  if (gm.lastMove) {
+    cellAt(gm.lastMove.from.x, gm.lastMove.from.y).classList.add('last-move');
+    cellAt(gm.lastMove.to.x, gm.lastMove.to.y).classList.add('last-move');
+  }
+
+  // Reset armed power-ups when the turn actually moves on (a shield cast
+  // keeps the turn, so Wind/Spirit stay armed through it).
+  const turnKey = `${gm.turn}:${gm.mover}:${gm.pending ? 'b' : '-'}`;
+  if (turnKey !== lastTurnKey) {
+    lastTurnKey = turnKey;
+    armed.spirit = false;
+    armed.wind = false;
+    armed.shieldMode = false;
+    clearSelection();
+  }
+
+  renderGmPanel();
+}
+
+function renderGmPanel() {
+  if (!gm || !game) return;
+
+  // Energy bars
+  for (const team of [0, 1]) {
+    const hud = team === 0 ? $('#hud-left') : $('#hud-right');
+    hud.querySelector('.energy-fill').style.width = `${(gm.energy[team] / ENERGY_CAP) * 100}%`;
+    hud.querySelector('.energy-num').textContent = `${gm.energy[team]}⚡`;
+  }
+
+  // Turn banner
+  const banner = $('#turn-banner');
+  const myMove = gm.mover === myId;
+  const moverName = game.players.find((p) => p.id === gm.mover)?.name || '…';
+  const isBonus = !!gm.pending;
+  banner.classList.remove('hidden', 'my-turn', 'in-check');
+  if (isBonus) {
+    banner.textContent = myMove ? '🌀 Bonus move!' : `🌀 ${moverName} has a bonus move…`;
+    if (myMove) banner.classList.add('my-turn');
+  } else if (myMove) {
+    banner.textContent = gm.check ? '⚠️ CHECK — defend your king!' : 'Your move!';
+    banner.classList.add(gm.check ? 'in-check' : 'my-turn');
+  } else {
+    banner.textContent = `${moverName} is thinking…` + (gm.check && gm.turn !== game.myTeam ? ' (in check!)' : '');
+  }
+
+  // Power buttons
+  const myEnergy = gm.energy[game.myTeam];
+  const canAct = myMove && !isBonus && game.playing;
+  const btnShield = $('#pw-shield');
+  const btnSpirit = $('#pw-spirit');
+  const btnWind = $('#pw-wind');
+  btnShield.disabled = !canAct || myEnergy < COSTS.shield;
+  btnSpirit.disabled = !canAct || myEnergy < COSTS.spirit;
+  btnWind.disabled = !canAct || myEnergy < COSTS.wind;
+  btnShield.classList.toggle('armed', armed.shieldMode);
+  btnSpirit.classList.toggle('armed', armed.spirit);
+  btnWind.classList.toggle('armed', armed.wind);
+
+  // Second Wind bonus bar
+  $('#bonus-bar').classList.toggle('hidden', !(isBonus && myMove));
+}
+
+function highlightGm() {
+  cells.forEach((c) => c.classList.remove('sel', 'dot', 'ring', 'sdot'));
+  if (!game?.selected || !gm) return;
+  const sel = gm.pieces.find((p) => p.id === game.selected);
+  if (!sel) return;
+  cellAt(sel.x, sel.y).classList.add('sel');
+
+  const st = gmRulesState();
+  const g = gmGrid(st);
+  let moves;
+  if (gm.pending && gm.pending.team === game.myTeam) {
+    moves = bonusMovesFor(st, game.myTeam, gm.pending.exclude).filter((m) => m.pieceId === sel.id);
+  } else {
+    const useSpirit = armed.spirit && gm.energy[game.myTeam] >= COSTS.spirit;
+    moves = legalMovesFor(st, sel.id, { spirit: useSpirit });
+  }
+  for (const m of moves) {
+    const cls = m.spirit ? 'sdot' : (g[m.y][m.x] ? 'ring' : 'dot');
+    cellAt(m.x, m.y).classList.add(cls);
+  }
+}
+
+function sendGmMove({ bonus, id, x, y, spirit, promo }) {
+  if (bonus) {
+    send({ t: 'gbonus', id, x, y, promo });
+  } else {
+    send({ t: 'gmove', id, x, y, spirit, sw: armed.wind, promo });
+  }
+  sfx.move();
+  clearSelection();
+}
+
+function onCellTapGm(vx, vy) {
+  if (!gm) return;
+  const { x, y } = toModel(vx, vy);
+  const st = gmRulesState();
+  const g = gmGrid(st);
+  const target = g[y][x];
+
+  // Aegis targeting mode
+  if (armed.shieldMode) {
+    armed.shieldMode = false;
+    if (target && target.team === game.myTeam && target.type !== 'king' && !gm.shields.includes(target.id)) {
+      send({ t: 'shield', id: target.id });
+    }
+    renderGmPanel();
+    return;
+  }
+
+  if (gm.mover !== myId) return;
+  const isBonus = gm.pending && gm.pending.team === game.myTeam;
+
+  if (game.selected) {
+    const sel = gm.pieces.find((p) => p.id === game.selected);
+    if (sel) {
+      let mv = null;
+      let spirit = false;
+      if (isBonus) {
+        mv = bonusMovesFor(st, game.myTeam, gm.pending.exclude)
+          .find((m) => m.pieceId === sel.id && m.x === x && m.y === y);
+      } else {
+        mv = legalMovesFor(st, sel.id).find((m) => m.x === x && m.y === y);
+        if (!mv && armed.spirit && gm.energy[game.myTeam] >= COSTS.spirit) {
+          mv = legalMovesFor(st, sel.id, { spirit: true })
+            .find((m) => m.spirit && m.x === x && m.y === y);
+          spirit = !!mv;
+        }
+      }
+      if (mv) {
+        if (sel.type === 'pawn' && y === promotionRow(game.myTeam)) {
+          openPromoPicker({ bonus: isBonus, id: sel.id, x, y, spirit });
+        } else {
+          sendGmMove({ bonus: isBonus, id: sel.id, x, y, spirit });
+        }
+        return;
+      }
+    }
+  }
+
+  if (target && target.team === game.myTeam && (!isBonus || target.id !== gm.pending.exclude)) {
+    if (game.selected === target.id) {
+      clearSelection();
+      return;
+    }
+    clearSelection();
+    game.selected = target.id;
+    game.els.get(target.id)?.el.classList.add('selected');
+    sfx.select();
+    highlightGm();
+    return;
+  }
+
+  clearSelection();
+}
+
+// Promotion picker
+let pendingPromo = null;
+function openPromoPicker(move) {
+  pendingPromo = move;
+  const box = $('#promo-choices');
+  box.innerHTML = '';
+  for (const type of ['queen', 'rook', 'bishop', 'knight']) {
+    const btn = document.createElement('button');
+    btn.innerHTML = pieceSVG(type, game.myTeam);
+    btn.addEventListener('click', () => {
+      $('#overlay-promo').classList.add('hidden');
+      if (pendingPromo) sendGmMove({ ...pendingPromo, promo: type });
+      pendingPromo = null;
+    });
+    box.appendChild(btn);
+  }
+  $('#overlay-promo').classList.remove('hidden');
+}
+
+// Power-up buttons
+$('#pw-shield').addEventListener('click', () => {
+  armed.shieldMode = !armed.shieldMode;
+  if (armed.shieldMode) toast('Pick one of your pieces to shield 🛡');
+  sfx.select();
+  renderGmPanel();
+});
+
+$('#pw-spirit').addEventListener('click', () => {
+  armed.spirit = !armed.spirit;
+  sfx.select();
+  renderGmPanel();
+  highlightGm();
+});
+
+$('#pw-wind').addEventListener('click', () => {
+  armed.wind = !armed.wind;
+  if (armed.wind) toast('Second Wind armed — it triggers after your next move 🌀');
+  sfx.select();
+  renderGmPanel();
+});
+
+$('#btn-skip-bonus').addEventListener('click', () => {
+  send({ t: 'gbonus', skip: true });
+});
+
+$('#btn-resign').addEventListener('click', () => {
+  if (window.confirm('Resign the game?')) send({ t: 'resign' });
+});
+
+function spawnSparks(x, y, colors, n) {
+  const { vx, vy } = toVisual(x, y);
+  const cx = (vx + 0.5) * 12.5;
+  const cy = (vy + 0.5) * 12.5;
+  for (let i = 0; i < n; i++) {
+    const s = document.createElement('div');
+    s.className = 'spark';
+    s.style.left = `${cx}%`;
+    s.style.top = `${cy}%`;
+    s.style.background = colors[i % colors.length];
+    const ang = Math.random() * Math.PI * 2;
+    const dist = 40 * (0.5 + Math.random());
+    s.style.setProperty('--dx', `${Math.cos(ang) * dist}px`);
+    s.style.setProperty('--dy', `${Math.sin(ang) * dist}px`);
+    els.fxLayer.appendChild(s);
+    setTimeout(() => s.remove(), 600);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Game end
 // ---------------------------------------------------------------------------
 
@@ -602,20 +933,33 @@ function endGame(msg) {
   inGame = false;
   if (game) game.playing = false;
   clearSelection();
+  $('#bonus-bar').classList.add('hidden');
+  $('#overlay-promo').classList.add('hidden');
+  pendingPromo = null;
 
-  const won = msg.winner === game?.myTeam;
-  $('#end-emoji').textContent = won ? '🏆' : '💀';
+  const draw = msg.winner === -1;
+  const won = !draw && msg.winner === game?.myTeam;
+  $('#end-emoji').textContent = draw ? '🤝' : won ? '🏆' : '💀';
   const title = $('#end-title');
-  title.textContent = `${TEAM_NAMES[msg.winner]} wins!`;
-  title.className = msg.winner === 0 ? 'win-blue' : 'win-red';
-  $('#end-sub').textContent =
-    msg.reason === 'forfeit'
-      ? 'The other team fled the battlefield!'
-      : won ? 'You captured the enemy king!' : 'Your king has been captured…';
+  title.textContent = draw ? 'It’s a draw!' : `${TEAM_NAMES[msg.winner]} wins!`;
+  title.className = draw ? '' : msg.winner === 0 ? 'win-blue' : 'win-red';
+  const subs = {
+    king: won ? 'You captured the enemy king!' : 'Your king has been captured…',
+    forfeit: 'The other team fled the battlefield!',
+    checkmate: won ? 'Checkmate! The enemy king is trapped.' : 'Checkmate… your king is trapped.',
+    resign: won ? 'The enemy resigned. Victory with honor!' : 'Your team resigned.',
+    stalemate: 'Stalemate — no legal moves, nobody wins.',
+    repetition: 'Draw by threefold repetition.',
+    fifty: 'Draw by the 50-move rule.',
+    material: 'Draw — not enough pieces left to checkmate.',
+  };
+  $('#end-sub').textContent = subs[msg.reason] || '';
 
   const confetti = $('#confetti');
   confetti.innerHTML = '';
-  if (won) {
+  if (draw) {
+    sfx.emote();
+  } else if (won) {
     const colors = ['#ffd34d', '#ff6b57', '#5aa6ff', '#9ade6b', '#c39bff'];
     for (let i = 0; i < 40; i++) {
       const span = document.createElement('span');

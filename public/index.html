@@ -78,6 +78,13 @@
             </div>
           </div>
           <div class="option-group">
+            <div class="option-label">Rules</div>
+            <div class="segmented" id="seg-rules">
+              <button data-rules="battle" class="seg-btn">⚡ Battle</button>
+              <button data-rules="grandmaster" class="seg-btn">👑 Grandmaster</button>
+            </div>
+          </div>
+          <div class="option-group" id="speed-group">
             <div class="option-label">Speed</div>
             <div class="segmented" id="seg-speed">
               <button data-speed="chill" class="seg-btn">🐢 Chill</button>
@@ -86,6 +93,7 @@
             </div>
           </div>
         </div>
+        <div id="rules-blurb" class="rules-blurb"></div>
 
         <button id="btn-start" class="btn btn-primary btn-big">Start Battle!</button>
         <div id="lobby-hint" class="lobby-hint"></div>
@@ -99,13 +107,17 @@
         <div id="hud-left" class="hud-team hud-blue">
           <div class="hud-names"></div>
           <div class="hud-caps"></div>
+          <div class="energy"><div class="energy-track"><div class="energy-fill"></div></div><span class="energy-num">0⚡</span></div>
         </div>
         <div class="hud-mid">⚔️</div>
         <div id="hud-right" class="hud-team hud-red">
           <div class="hud-names"></div>
           <div class="hud-caps"></div>
+          <div class="energy"><div class="energy-track"><div class="energy-fill"></div></div><span class="energy-num">0⚡</span></div>
         </div>
       </div>
+
+      <div id="turn-banner" class="turn-banner hidden"></div>
 
       <div id="board-wrap">
         <div id="board"></div>
@@ -113,6 +125,24 @@
         <div id="fx-layer"></div>
         <div id="emote-layer"></div>
         <div id="countdown" class="hidden"></div>
+      </div>
+
+      <div id="bonus-bar" class="bonus-bar hidden">
+        <span>🌀 Second Wind! Move another piece (no captures, no checks)</span>
+        <button id="btn-skip-bonus" class="btn btn-mini">Skip</button>
+      </div>
+
+      <div id="power-tray" class="power-tray hidden">
+        <button id="pw-shield" class="power-btn" title="Aegis — shield one of your pieces (not the king); it cannot be captured until your next turn begins. Cast before your move.">
+          <span class="pw-icon">🛡</span><span class="pw-name">Aegis</span><span class="pw-cost">4⚡</span>
+        </button>
+        <button id="pw-spirit" class="power-btn" title="Knight's Spirit — this move, one piece (not the king) may also jump like a knight. It can capture pieces but never a king.">
+          <span class="pw-icon">🐴</span><span class="pw-name">Spirit</span><span class="pw-cost">6⚡</span>
+        </button>
+        <button id="pw-wind" class="power-btn" title="Second Wind — after your move, make one extra move with a different piece. The bonus move may not capture and may not give check; it is forfeited if your first move gives check.">
+          <span class="pw-icon">🌀</span><span class="pw-name">Wind</span><span class="pw-cost">10⚡</span>
+        </button>
+        <button id="btn-resign" class="btn-text pw-resign">🏳 resign</button>
       </div>
 
       <div class="emote-tray" id="emote-tray"></div>
@@ -127,6 +157,14 @@
       <h2 id="end-title">Blue wins!</h2>
       <p id="end-sub"></p>
       <button id="btn-back-lobby" class="btn btn-primary btn-big">Back to Lobby</button>
+    </div>
+  </div>
+
+  <!-- ============ PROMOTION PICKER ============ -->
+  <div id="overlay-promo" class="overlay hidden">
+    <div class="card promo-card">
+      <h2>Promote to…</h2>
+      <div id="promo-choices" class="promo-choices"></div>
     </div>
   </div>
 

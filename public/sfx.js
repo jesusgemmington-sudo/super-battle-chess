@@ -87,5 +87,10 @@ export const sfx = {
 
   emote() { note({ freq: 350, end: 750, dur: 0.16, type: 'sine', vol: 0.12 }); },
 
+  check() {
+    note({ freq: 740, end: 740, dur: 0.1, type: 'square', vol: 0.1 });
+    note({ freq: 740, end: 700, dur: 0.14, type: 'square', vol: 0.1, at: 0.14 });
+  },
+
   join() { note({ freq: 440, end: 660, dur: 0.14, type: 'triangle', vol: 0.1 }); },
 };

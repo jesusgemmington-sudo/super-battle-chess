@@ -1,9 +1,25 @@
 # ♟ Super Battle Chess
 
-Real-time multiplayer battle chess — **no turns, no mercy**. Inspired by the
-frantic simultaneous-play energy of *Super Battle Golf*: both teams move at the
-same time, every piece has a short cooldown after moving, and the first team to
-**capture the enemy king** wins. Supports **1v1** and **2v2**.
+Multiplayer battle chess for **1v1** and **2v2**, with two rule sets:
+
+**⚡ Battle** — real-time, **no turns, no mercy**. Inspired by the frantic
+simultaneous-play energy of *Super Battle Golf*: both teams move at the same
+time, every piece has a short cooldown after moving, and the first team to
+**capture the enemy king** wins.
+
+**👑 Grandmaster** — the complete laws of chess (turns, check, checkmate,
+castling, en passant, promotion choice, stalemate, 50-move rule, threefold
+repetition) plus a perfectly fair power-up economy. Every turn banks **+1⚡**
+for both sides alike — no randomness, no hidden information — and energy buys:
+
+| Power-up | Cost | Effect |
+|---|---|---|
+| 🛡 **Aegis** | 4⚡ | Shield a piece (not the king) — it can't be captured until your next turn begins. Cast freely before your move. |
+| 🐴 **Knight's Spirit** | 6⚡ | One piece (not the king) may make a knight-jump as its move. Can capture pieces, never a king. |
+| 🌀 **Second Wind** | 10⚡ | After your move, move a second, different piece. The bonus move can't capture or give check, and is forfeited if your first move gave check. |
+
+Checkmate detection is power-up aware: it isn't mate if a 6⚡ knight-jump can
+still save the king. In 2v2 Grandmaster, teammates alternate the team's moves.
 
 ## Quick start
 
@@ -30,7 +46,7 @@ address when it starts — friends on your network open that URL.
 - A quick tunnel, e.g. `cloudflared tunnel --url http://localhost:3000` or `ngrok http 3000` — share the generated URL.
 - Or port-forward TCP 3000 on your router and share your public IP.
 
-## How it plays
+## How Battle mode plays
 
 - ⚡ **No turns.** Anyone can move any of their team's pieces at any moment.
 - ⏳ **Cooldowns.** After a piece moves it rests for a few seconds (host picks: 🐢 Chill 4.5s, ⚔️ Classic 3s, 🔥 Frenzy 1.5s).
@@ -38,6 +54,17 @@ address when it starts — friends on your network open that URL.
 - 🤝 **2v2:** both teammates control the same army simultaneously. Coordinate or perish.
 - ♟ Pieces move like normal chess pieces. Pawns auto-promote to queens. No castling or en passant in the battle arena.
 - 😂 Spam emotes responsibly.
+
+## How Grandmaster mode plays
+
+- ♟ **Real chess.** Strict turns, full legality (pins, castling rules, en
+  passant, promotion with under-promotion), check and checkmate, stalemate and
+  draw rules. Win by checkmate or resignation — kings are never captured.
+- ⚡ **Energy.** Both teams gain exactly +1 per own turn (cap 12). Spend it on
+  the three power-ups above; your opponent always sees your energy and active
+  effects, so every threat is readable — pure skill, zero RNG.
+- 🤝 **2v2:** teammates alternate making the team's moves.
+- 🏳 A resign button exists for the honorable.
 
 ## Tech
 

@@ -10,6 +10,10 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { createPieces, buildGrid, isLegalMove, promotionRow } from './public/rules.js';
+import {
+  COSTS, createState, findPiece, legalMovesFor, bonusMovesFor,
+  applyMoveRaw, endTurn, inCheck,
+} from './public/classic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -78,11 +82,13 @@ function createRoom() {
   const room = {
     code,
     mode: '1v1',
+    rules: 'battle', // battle (real-time) | grandmaster (turn-based + power-ups)
     speed: 'classic',
     hostId: null,
     state: 'lobby', // lobby | countdown | playing
     players: new Map(), // id -> player
     pieces: null,
+    game: null, // grandmaster game: { state, moverIdx, lastMove }
     startsAt: 0,
     countdownTimer: null,
   };
@@ -108,6 +114,7 @@ function lobbySnapshot(room) {
     t: 'lobby',
     code: room.code,
     mode: room.mode,
+    rules: room.rules,
     speed: room.speed,
     hostId: room.hostId,
     state: room.state,
@@ -154,18 +161,28 @@ function startGame(room) {
   if (room.players.size !== perTeam * 2 || counts[0] !== perTeam || counts[1] !== perTeam) {
     return `${room.mode} needs ${perTeam} player${perTeam > 1 ? 's' : ''} on each team`;
   }
-  room.pieces = createPieces().map((p) => ({ ...p, cdUntil: 0 }));
   room.state = 'countdown';
   room.startsAt = Date.now() + COUNTDOWN_MS;
-  broadcast(room, {
+  const startMsg = {
     t: 'start',
     mode: room.mode,
+    rules: room.rules,
     speed: room.speed,
     cooldown: SPEEDS[room.speed],
     in: COUNTDOWN_MS,
     players: [...room.players.values()].map((p) => ({ id: p.id, name: p.name, team: p.team })),
-    pieces: serializePieces(room),
-  });
+  };
+  if (room.rules === 'grandmaster') {
+    room.game = { state: createState(), moverIdx: [0, 0], lastMove: null };
+    room.pieces = null;
+    startMsg.gm = gmPayload(room);
+    startMsg.pieces = startMsg.gm.pieces;
+  } else {
+    room.pieces = createPieces().map((p) => ({ ...p, cdUntil: 0 }));
+    room.game = null;
+    startMsg.pieces = serializePieces(room);
+  }
+  broadcast(room, startMsg);
   room.countdownTimer = setTimeout(() => {
     if (room.state === 'countdown') room.state = 'playing';
   }, COUNTDOWN_MS);
@@ -177,8 +194,169 @@ function endGame(room, winner, reason) {
   clearTimeout(room.countdownTimer);
   room.state = 'lobby';
   room.pieces = null;
+  room.game = null;
   broadcast(room, { t: 'end', winner, reason });
   broadcastLobby(room);
+}
+
+// ---------------------------------------------------------------------------
+// Grandmaster mode (turn-based classic chess + power-ups)
+// ---------------------------------------------------------------------------
+
+function teamPlayers(room, team) {
+  return [...room.players.values()].filter((p) => p.team === team);
+}
+
+// In 2v2, teammates alternate making the team's moves.
+function currentMover(room) {
+  const st = room.game.state;
+  const team = st.pending ? st.pending.team : st.turn;
+  const list = teamPlayers(room, team);
+  if (list.length === 0) return null;
+  return list[room.game.moverIdx[team] % list.length].id;
+}
+
+function gmPayload(room, event = null) {
+  const st = room.game.state;
+  return {
+    t: 'gstate',
+    pieces: st.pieces
+      .filter((p) => p.alive)
+      .map((p) => ({ id: p.id, type: p.type, team: p.team, x: p.x, y: p.y, moved: p.moved })),
+    turn: st.turn,
+    ep: st.ep,
+    energy: st.energy,
+    shields: Object.keys(st.shields),
+    pending: st.pending,
+    mover: currentMover(room),
+    check: inCheck(st, st.turn),
+    lastMove: room.game.lastMove,
+    event,
+  };
+}
+
+function finishGmTurn(room, event) {
+  const st = room.game.state;
+  const movedTeam = st.turn;
+  const result = endTurn(st);
+  room.game.moverIdx[movedTeam]++;
+  broadcast(room, gmPayload(room, event));
+  if (result) {
+    endGame(room, result.winner, result.reason);
+  }
+}
+
+function gmGuard(room, player) {
+  if (!room || room.rules !== 'grandmaster' || room.state !== 'playing' || !room.game) return false;
+  if (Date.now() < room.startsAt) return false;
+  if (player.id !== currentMover(room)) return false;
+  return true;
+}
+
+function handleGmMove(room, player, msg) {
+  if (!gmGuard(room, player)) return;
+  const st = room.game.state;
+  if (st.pending) return;
+
+  const piece = findPiece(st, msg.id);
+  const x = Number(msg.x);
+  const y = Number(msg.y);
+  if (!piece || !piece.alive || piece.team !== player.team || piece.team !== st.turn) return;
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return;
+
+  // Prefer a normal move; fall back to a Knight's Spirit jump if requested.
+  let mv = legalMovesFor(st, piece.id).find((m) => m.x === x && m.y === y);
+  let usedSpirit = false;
+  if (!mv && msg.spirit && st.energy[piece.team] >= COSTS.spirit) {
+    mv = legalMovesFor(st, piece.id, { spirit: true })
+      .find((m) => m.spirit && m.x === x && m.y === y);
+    usedSpirit = !!mv;
+  }
+  if (!mv) {
+    send(player, { t: 'reject', id: piece.id });
+    return;
+  }
+
+  const wantWind = !!msg.sw &&
+    st.energy[piece.team] - (usedSpirit ? COSTS.spirit : 0) >= COSTS.wind;
+
+  if (usedSpirit) st.energy[piece.team] -= COSTS.spirit;
+  if (wantWind) st.energy[piece.team] -= COSTS.wind;
+
+  const from = { x: piece.x, y: piece.y };
+  const { captured, promoted } = applyMoveRaw(st, piece.id, mv, msg.promo);
+  room.game.lastMove = { from, to: { x, y } };
+
+  const event = {
+    kind: captured ? 'capture' : 'move',
+    id: piece.id,
+    from,
+    to: { x, y },
+    captured: captured ? { id: captured.id, type: captured.type, team: captured.team } : null,
+    castle: mv.castle || null,
+    enPassant: !!mv.ep,
+    spirit: usedSpirit,
+    promoted,
+  };
+
+  // Second Wind: bonus move owed, unless the first move gave check
+  // (or no legal bonus move exists).
+  if (wantWind && !inCheck(st, 1 - st.turn) &&
+      bonusMovesFor(st, st.turn, piece.id).length > 0) {
+    st.pending = { team: st.turn, exclude: piece.id };
+    broadcast(room, gmPayload(room, event));
+    return;
+  }
+
+  finishGmTurn(room, event);
+}
+
+function handleGmBonus(room, player, msg) {
+  if (!gmGuard(room, player)) return;
+  const st = room.game.state;
+  if (!st.pending || st.pending.team !== player.team) return;
+
+  if (msg.skip) {
+    finishGmTurn(room, { kind: 'windskip' });
+    return;
+  }
+
+  const x = Number(msg.x);
+  const y = Number(msg.y);
+  const mv = bonusMovesFor(st, st.pending.team, st.pending.exclude)
+    .find((m) => m.pieceId === msg.id && m.x === x && m.y === y);
+  if (!mv) {
+    send(player, { t: 'reject', id: msg.id });
+    return;
+  }
+  const piece = findPiece(st, msg.id);
+  const from = { x: piece.x, y: piece.y };
+  const { promoted } = applyMoveRaw(st, msg.id, mv, msg.promo);
+  room.game.lastMove = { from, to: { x, y } };
+  finishGmTurn(room, {
+    kind: 'move', id: msg.id, from, to: { x, y },
+    captured: null, castle: mv.castle || null, enPassant: false,
+    spirit: false, promoted, wind: true,
+  });
+}
+
+function handleGmShield(room, player, msg) {
+  if (!gmGuard(room, player)) return;
+  const st = room.game.state;
+  if (st.pending) return;
+  const piece = findPiece(st, msg.id);
+  if (!piece || !piece.alive || piece.team !== player.team || piece.team !== st.turn) return;
+  if (piece.type === 'king' || st.shields[piece.id]) return;
+  if (st.energy[piece.team] < COSTS.shield) return;
+  st.energy[piece.team] -= COSTS.shield;
+  st.shields[piece.id] = true;
+  broadcast(room, gmPayload(room, { kind: 'shield', id: piece.id }));
+}
+
+function handleGmResign(room, player) {
+  if (!room || room.rules !== 'grandmaster') return;
+  if (room.state !== 'playing' && room.state !== 'countdown') return;
+  endGame(room, player.team === 0 ? 1 : 0, 'resign');
 }
 
 function handleMove(room, player, msg) {
@@ -299,6 +477,14 @@ function handleMessage(player, msg) {
       break;
     }
 
+    case 'setRules': {
+      if (!room || room.state !== 'lobby' || player.id !== room.hostId) return;
+      if (msg.rules !== 'battle' && msg.rules !== 'grandmaster') return;
+      room.rules = msg.rules;
+      broadcastLobby(room);
+      break;
+    }
+
     case 'setTeam': {
       if (!room || room.state !== 'lobby') return;
       const team = msg.team === 1 ? 1 : 0;
@@ -315,7 +501,27 @@ function handleMessage(player, msg) {
     }
 
     case 'move': {
-      if (room) handleMove(room, player, msg);
+      if (room && room.rules === 'battle') handleMove(room, player, msg);
+      break;
+    }
+
+    case 'gmove': {
+      if (room) handleGmMove(room, player, msg);
+      break;
+    }
+
+    case 'gbonus': {
+      if (room) handleGmBonus(room, player, msg);
+      break;
+    }
+
+    case 'shield': {
+      if (room) handleGmShield(room, player, msg);
+      break;
+    }
+
+    case 'resign': {
+      if (room) handleGmResign(room, player);
       break;
     }
 
@@ -360,6 +566,7 @@ function removeFromRoom(player) {
       return;
     }
     broadcast(room, { t: 'playerLeft', name: player.name });
+    if (room.game) broadcast(room, gmPayload(room)); // mover may have changed
   }
   broadcastLobby(room);
 }
